@@ -1,0 +1,408 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Top-level deny-by-default safeguard
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Authentication & Role Helpers ---
+    function isSignedIn() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email != null;
+    }
+
+    function authEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    function isBootstrapAdmin() {
+      return isSignedIn() && authEmail() == 'rifairwansani@sma1kudus.sch.id';
+    }
+
+    function accountExists(emailLower) {
+      return exists(/databases/$(database)/documents/accounts/$(emailLower));
+    }
+
+    function accountData(emailLower) {
+      return get(/databases/$(database)/documents/accounts/$(emailLower)).data;
+    }
+
+    function hasActiveAccount() {
+      return isSignedIn()
+        && accountExists(authEmail())
+        && accountData(authEmail()).status == 'Aktif';
+    }
+
+    function isStaff() {
+      return isBootstrapAdmin() || hasActiveAccount();
+    }
+
+    function isAdmin() {
+      return isBootstrapAdmin()
+        || (hasActiveAccount() && accountData(authEmail()).role == 'Admin');
+    }
+
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+
+    // --- Validation Primitives ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 160 && !id.matches('.*[/].*');
+    }
+
+    function isValidEmailId(id) {
+      return id is string
+        && id.size() >= 3
+        && id.size() <= 160
+        && !id.matches('.*[/\\s].*')
+        && id.matches('^[^@]+@[^@]+\\.[^@]+$');
+    }
+
+    function isStr(val, maxLen) {
+      return val is string && val.size() <= maxLen;
+    }
+
+    function isReqStr(val, maxLen) {
+      return val is string && val.size() >= 1 && val.size() <= maxLen;
+    }
+
+    function validServerTimestampsOnCreate(data) {
+      return (!('serverCreatedAt' in data) || (data.serverCreatedAt is timestamp && data.serverCreatedAt == request.time))
+        && (!('serverUpdatedAt' in data) || (data.serverUpdatedAt is timestamp && data.serverUpdatedAt == request.time));
+    }
+
+    function validServerTimestampsOnUpdate(newData, oldData) {
+      return (!('serverCreatedAt' in oldData) || (('serverCreatedAt' in newData) && newData.serverCreatedAt == oldData.serverCreatedAt))
+        && (!('serverUpdatedAt' in newData) || (newData.serverUpdatedAt is timestamp && newData.serverUpdatedAt == request.time));
+    }
+
+    // --- Entity Validators ---
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'createdAt', 'lastLoginAt'])
+        && data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'createdAt', 'lastLoginAt'])
+        && isReqStr(data.uid, 128)
+        && isReqStr(data.email, 160)
+        && isStr(data.displayName, 160)
+        && data.role in ['Admin', 'Guru Mapel', 'Wali Kelas', 'Guru BK', 'Kepala Sekolah', 'Pending']
+        && data.createdAt is timestamp
+        && data.lastLoginAt is timestamp;
+    }
+
+    function isValidAccount(data) {
+      return data.keys().hasAll(['id', 'name', 'email', 'role', 'nip', 'status', 'lastLogin', 'signatureImage', 'schoolStampImage'])
+        && data.keys().hasOnly([
+          'id', 'name', 'email', 'username', 'hasPassword', 'role', 'nip',
+          'status', 'lastLogin', 'signatureImage', 'schoolStampImage',
+          'serverCreatedAt', 'serverUpdatedAt'
+        ])
+        && isValidEmailId(data.id)
+        && isReqStr(data.name, 160)
+        && isReqStr(data.email, 160)
+        && data.email.lower() == data.id
+        && (!('username' in data) || isStr(data.username, 64))
+        && (!('hasPassword' in data) || data.hasPassword is bool)
+        && data.role in ['Admin', 'Guru Mapel', 'Wali Kelas', 'Guru BK', 'Kepala Sekolah']
+        && isStr(data.nip, 64)
+        && data.status in ['Aktif', 'Nonaktif']
+        && isStr(data.lastLogin, 64)
+        && isStr(data.signatureImage, 350000)
+        && isStr(data.schoolStampImage, 350000);
+    }
+
+    function isValidStudent(data) {
+      return data.keys().hasAll([
+          'id', 'nis', 'nisn', 'name', 'className', 'absentNo', 'birthPlace', 'birthDate',
+          'email', 'photo', 'address', 'phone', 'gender', 'status', 'homeroomTeacher',
+          'counselorTeacher', 'entryYear'
+        ])
+        && data.keys().hasOnly([
+          'id', 'nis', 'nisn', 'name', 'className', 'absentNo', 'birthPlace', 'birthDate',
+          'email', 'photo', 'address', 'phone', 'gender', 'status', 'homeroomTeacher',
+          'counselorTeacher', 'entryYear', 'serverCreatedAt', 'serverUpdatedAt'
+        ])
+        && isValidId(data.id)
+        && isStr(data.nis, 64)
+        && isStr(data.nisn, 64)
+        && isReqStr(data.name, 160)
+        && isReqStr(data.className, 64)
+        && isStr(data.absentNo, 32)
+        && isStr(data.birthPlace, 120)
+        && isStr(data.birthDate, 32)
+        && isStr(data.email, 160)
+        && isStr(data.photo, 350000)
+        && isStr(data.address, 400)
+        && isStr(data.phone, 40)
+        && data.gender in ['L', 'P']
+        && data.status in ['Aktif', 'Pindah', 'Lulus', 'Nonaktif']
+        && isStr(data.homeroomTeacher, 160)
+        && isStr(data.counselorTeacher, 160)
+        && isStr(data.entryYear, 32);
+    }
+
+    function isValidTeacher(data) {
+      return data.keys().hasAll([
+          'id', 'nip', 'name', 'position', 'subject', 'email', 'phone',
+          'gender', 'employmentStatus', 'status', 'address', 'photo'
+        ])
+        && data.keys().hasOnly([
+          'id', 'nip', 'name', 'position', 'subject', 'email', 'phone',
+          'gender', 'employmentStatus', 'status', 'address', 'photo',
+          'serverCreatedAt', 'serverUpdatedAt'
+        ])
+        && isValidId(data.id)
+        && isStr(data.nip, 64)
+        && isReqStr(data.name, 160)
+        && isStr(data.position, 160)
+        && isStr(data.subject, 120)
+        && isStr(data.email, 160)
+        && isStr(data.phone, 40)
+        && data.gender in ['L', 'P']
+        && data.employmentStatus in ['PNS', 'PPPK', 'Tetap Yayasan', 'Honorer']
+        && data.status in ['Aktif', 'Cuti', 'Nonaktif']
+        && isStr(data.address, 400)
+        && isStr(data.photo, 350000);
+    }
+
+    function isValidSchedule(data) {
+      return data.keys().hasAll([
+          'id', 'day', 'jamKe', 'timeRange', 'className', 'subject',
+          'teacherName', 'room', 'academicYear', 'semester', 'notes'
+        ])
+        && data.keys().hasOnly([
+          'id', 'day', 'jamKe', 'timeRange', 'className', 'subject',
+          'teacherName', 'room', 'academicYear', 'semester', 'notes',
+          'serverCreatedAt', 'serverUpdatedAt'
+        ])
+        && isValidId(data.id)
+        && data.day in ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu']
+        && isStr(data.jamKe, 32)
+        && isStr(data.timeRange, 64)
+        && isReqStr(data.className, 64)
+        && isReqStr(data.subject, 120)
+        && isStr(data.teacherName, 160)
+        && isStr(data.room, 80)
+        && isStr(data.academicYear, 32)
+        && data.semester in ['Ganjil', 'Genap']
+        && isStr(data.notes, 400);
+    }
+
+    function isValidJournal(data) {
+      return data.keys().hasAll([
+          'id', 'date', 'jamKe', 'className', 'subject', 'topic',
+          'activity', 'academicYear', 'semester', 'attendance', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'date', 'jamKe', 'className', 'subject', 'topic',
+          'activity', 'academicYear', 'semester', 'attendance', 'createdAt',
+          'serverCreatedAt', 'serverUpdatedAt'
+        ])
+        && isValidId(data.id)
+        && isReqStr(data.date, 32)
+        && isStr(data.jamKe, 32)
+        && isReqStr(data.className, 64)
+        && isStr(data.subject, 120)
+        && isReqStr(data.topic, 300)
+        && isStr(data.activity, 2000)
+        && isStr(data.academicYear, 32)
+        && data.semester in ['Ganjil', 'Genap']
+        && data.attendance is map
+        && data.attendance.size() <= 120
+        && isStr(data.createdAt, 64);
+    }
+
+    function isValidGrade(data) {
+      return data.keys().hasAll([
+          'id', 'className', 'subject', 'examType', 'studentId', 'score',
+          'note', 'marker', 'academicYear', 'semester', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'className', 'subject', 'examType', 'studentId', 'score',
+          'note', 'marker', 'academicYear', 'semester', 'updatedAt',
+          'serverCreatedAt', 'serverUpdatedAt'
+        ])
+        && isValidId(data.id)
+        && isReqStr(data.className, 64)
+        && isReqStr(data.subject, 120)
+        && isReqStr(data.examType, 64)
+        && isReqStr(data.studentId, 160)
+        && (data.score == null || ((data.score is int || data.score is float) && data.score >= 0 && data.score <= 100))
+        && isStr(data.note, 500)
+        && data.marker in ['neutral', 'green', 'yellow', 'red', 'blue']
+        && isStr(data.academicYear, 32)
+        && data.semester in ['Ganjil', 'Genap']
+        && isStr(data.updatedAt, 64);
+    }
+
+    function isValidSettings(data) {
+      return data.keys().hasAll([
+          'academicYear', 'semester', 'signatureLocation', 'principalTitle',
+          'principalName', 'principalNip', 'principalSignatureImage',
+          'defaultSchoolStampImage', 'teacherName', 'teacherNip', 'schoolName',
+          'email', 'themeId', 'identity', 'signaturePosition',
+          'reportPrintPreferences', 'kopSurat', 'masterClasses',
+          'masterSubjects', 'masterExamTypes', 'masterAcademicYears'
+        ])
+        && data.keys().hasOnly([
+          'academicYear', 'semester', 'signatureLocation', 'principalTitle',
+          'principalName', 'principalNip', 'principalSignatureImage',
+          'defaultSchoolStampImage', 'teacherName', 'teacherNip', 'schoolName',
+          'email', 'themeId', 'identity', 'signaturePosition',
+          'reportPrintPreferences', 'kopSurat', 'masterClasses',
+          'masterSubjects', 'masterExamTypes', 'masterAcademicYears',
+          'serverCreatedAt', 'serverUpdatedAt'
+        ])
+        && isReqStr(data.academicYear, 32)
+        && data.semester in ['Ganjil', 'Genap']
+        && isStr(data.signatureLocation, 120)
+        && isStr(data.principalTitle, 120)
+        && isStr(data.principalName, 160)
+        && isStr(data.principalNip, 64)
+        && isStr(data.principalSignatureImage, 350000)
+        && isStr(data.defaultSchoolStampImage, 350000)
+        && isStr(data.teacherName, 160)
+        && isStr(data.teacherNip, 64)
+        && isStr(data.schoolName, 160)
+        && isStr(data.email, 160)
+        && data.themeId in ['slate-indigo', 'royal-blue', 'emerald-forest', 'crimson-charcoal', 'midnight-dark']
+        && data.identity is map
+        && data.signaturePosition is map
+        && data.reportPrintPreferences is map
+        && data.kopSurat is map
+        && data.masterClasses is list && data.masterClasses.size() <= 100
+        && data.masterSubjects is list && data.masterSubjects.size() <= 100
+        && data.masterExamTypes is list && data.masterExamTypes.size() <= 50
+        && data.masterAcademicYears is list && data.masterAcademicYears.size() <= 30;
+    }
+
+    // --- Collection Rules ---
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isSignedIn()
+        && isOwner(userId)
+        && isValidUserProfile(request.resource.data)
+        && request.resource.data.uid == userId
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.lastLoginAt == request.time
+        && ((isBootstrapAdmin() && request.resource.data.role == 'Admin')
+            || request.resource.data.role == 'Pending');
+      allow update: if isSignedIn()
+        && isValidUserProfile(request.resource.data)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.lastLoginAt == request.time
+        && (isAdmin()
+            || (isOwner(userId) && request.resource.data.role == resource.data.role));
+      allow delete: if isAdmin();
+    }
+
+    match /accounts/{accountId} {
+      allow get: if isSignedIn() && (authEmail() == accountId || isStaff());
+      allow list: if isStaff();
+      allow create: if isAdmin()
+        && isValidEmailId(accountId)
+        && isValidAccount(request.resource.data)
+        && request.resource.data.id == accountId
+        && validServerTimestampsOnCreate(request.resource.data);
+      allow update: if isValidAccount(request.resource.data)
+        && isValidEmailId(accountId)
+        && request.resource.data.id == accountId
+        && request.resource.data.email.lower() == accountId
+        && validServerTimestampsOnUpdate(request.resource.data, resource.data)
+        && (isAdmin()
+            || (isStaff()
+                && authEmail() == accountId
+                && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastLogin', 'name', 'nip', 'signatureImage', 'schoolStampImage', 'serverUpdatedAt'])));
+      allow delete: if isAdmin() && accountId != 'rifairwansani@sma1kudus.sch.id';
+    }
+
+    match /students/{studentId} {
+      allow read: if isStaff();
+      allow create: if isStaff()
+        && isValidId(studentId)
+        && isValidStudent(request.resource.data)
+        && request.resource.data.id == studentId
+        && validServerTimestampsOnCreate(request.resource.data);
+      allow update: if isStaff()
+        && isValidStudent(request.resource.data)
+        && request.resource.data.id == resource.data.id
+        && validServerTimestampsOnUpdate(request.resource.data, resource.data);
+      allow delete: if isStaff();
+    }
+
+    match /teachers/{teacherId} {
+      allow read: if isStaff();
+      allow create: if isStaff()
+        && isValidId(teacherId)
+        && isValidTeacher(request.resource.data)
+        && request.resource.data.id == teacherId
+        && validServerTimestampsOnCreate(request.resource.data);
+      allow update: if isStaff()
+        && isValidTeacher(request.resource.data)
+        && request.resource.data.id == resource.data.id
+        && validServerTimestampsOnUpdate(request.resource.data, resource.data);
+      allow delete: if isStaff();
+    }
+
+    match /schedules/{scheduleId} {
+      allow read: if isStaff();
+      allow create: if isStaff()
+        && isValidId(scheduleId)
+        && isValidSchedule(request.resource.data)
+        && request.resource.data.id == scheduleId
+        && validServerTimestampsOnCreate(request.resource.data);
+      allow update: if isStaff()
+        && isValidSchedule(request.resource.data)
+        && request.resource.data.id == resource.data.id
+        && validServerTimestampsOnUpdate(request.resource.data, resource.data);
+      allow delete: if isStaff();
+    }
+
+    match /journals/{journalId} {
+      allow read: if isStaff();
+      allow create: if isStaff()
+        && isValidId(journalId)
+        && isValidJournal(request.resource.data)
+        && request.resource.data.id == journalId
+        && validServerTimestampsOnCreate(request.resource.data);
+      allow update: if isStaff()
+        && isValidJournal(request.resource.data)
+        && request.resource.data.id == resource.data.id
+        && request.resource.data.createdAt == resource.data.createdAt
+        && validServerTimestampsOnUpdate(request.resource.data, resource.data);
+      allow delete: if isStaff();
+    }
+
+    match /grades/{gradeId} {
+      allow read: if isStaff();
+      allow create: if isStaff()
+        && isValidId(gradeId)
+        && isValidGrade(request.resource.data)
+        && request.resource.data.id == gradeId
+        && validServerTimestampsOnCreate(request.resource.data);
+      allow update: if isStaff()
+        && isValidGrade(request.resource.data)
+        && request.resource.data.id == resource.data.id
+        && validServerTimestampsOnUpdate(request.resource.data, resource.data);
+      allow delete: if isStaff();
+    }
+
+    match /settings/{settingId} {
+      allow read: if isStaff() && settingId == 'global';
+      allow create: if isStaff()
+        && settingId == 'global'
+        && isValidSettings(request.resource.data)
+        && validServerTimestampsOnCreate(request.resource.data);
+      allow update: if isStaff()
+        && settingId == 'global'
+        && isValidSettings(request.resource.data)
+        && validServerTimestampsOnUpdate(request.resource.data, resource.data);
+      allow delete: if isAdmin() && settingId == 'global';
+    }
+  }
+}

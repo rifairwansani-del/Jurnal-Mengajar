@@ -32,6 +32,7 @@ import {
   PAPER_SIZE_CONFIG,
   exportPreviewDomToWordDoc,
   resolveActiveSigner,
+  resolvePrincipalStampImage,
 } from '../utils/exportHelpers';
 import {
   formatCompactDateId,
@@ -216,6 +217,12 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   const [sigPos, setSigPos] = useState<SignaturePositionSettings>(
     () => settings.signaturePosition
   );
+  const [kopLeftSize, setKopLeftSize] = useState<number>(() =>
+    Math.max(28, Math.min(150, settings.kopSurat.logoLeftSize ?? 72))
+  );
+  const [kopRightSize, setKopRightSize] = useState<number>(() =>
+    Math.max(28, Math.min(150, settings.kopSurat.logoRightSize ?? 72))
+  );
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [isExportingWord, setIsExportingWord] = useState(false);
 
@@ -302,10 +309,15 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       (sigPos.teacherSigOffsetY ?? 0) !== (savedSig.teacherSigOffsetY ?? 0) ||
       (sigPos.stampOffsetX ?? 0) !== (savedSig.stampOffsetX ?? 0) ||
       (sigPos.stampOffsetY ?? 0) !== (savedSig.stampOffsetY ?? 0);
-    return prefsChanged || sigChanged;
+    const savedKopLeft = Math.max(28, Math.min(150, settings.kopSurat.logoLeftSize ?? 72));
+    const savedKopRight = Math.max(28, Math.min(150, settings.kopSurat.logoRightSize ?? 72));
+    const kopLogoChanged = kopLeftSize !== savedKopLeft || kopRightSize !== savedKopRight;
+    return prefsChanged || sigChanged || kopLogoChanged;
   }, [
     settings.reportPrintPreferences,
     settings.signaturePosition,
+    settings.kopSurat.logoLeftSize,
+    settings.kopSurat.logoRightSize,
     selectedReportTypes,
     selectedClasses,
     subjectFilter,
@@ -320,11 +332,20 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     paperSize,
     fontFamily,
     sigPos,
+    kopLeftSize,
+    kopRightSize,
   ]);
 
   const handleSavePrintSettings = () => {
+    const safeLeftSize = Math.max(28, Math.min(150, kopLeftSize));
+    const safeRightSize = Math.max(28, Math.min(150, kopRightSize));
     onUpdateSettings((prev) => ({
       ...prev,
+      kopSurat: {
+        ...prev.kopSurat,
+        logoLeftSize: safeLeftSize,
+        logoRightSize: safeRightSize,
+      },
       signaturePosition: sigPos,
       reportPrintPreferences: {
         ...prev.reportPrintPreferences,
@@ -364,6 +385,8 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     setPaperSize(prefs.paperSize);
     setFontFamily(prefs.fontFamily);
     setSigPos(settings.signaturePosition);
+    setKopLeftSize(Math.max(28, Math.min(150, settings.kopSurat.logoLeftSize ?? 72)));
+    setKopRightSize(Math.max(28, Math.min(150, settings.kopSurat.logoRightSize ?? 72)));
     onToast('info', 'Pengaturan cetak dikembalikan ke versi tersimpan.');
   };
 
@@ -1510,24 +1533,47 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             ? imageUrlToPngDataUrl(activeSigner.signatureImage)
             : Promise.resolve(null),
           sigPos.showStamp
-            ? imageUrlToPngDataUrl(activeSigner.schoolStampImage)
+            ? imageUrlToPngDataUrl(resolvePrincipalStampImage(db))
             : Promise.resolve(null),
         ]);
 
       const drawKopSurat = () => {
         if (!showKop) return;
-        const logoSize = 20;
+        const clampedLeftPx = Math.max(28, Math.min(150, kopLeftSize));
+        const clampedRightPx = Math.max(28, Math.min(150, kopRightSize));
+        const logoLeftMm = Math.round(clampedLeftPx * 0.264583 * 10) / 10;
+        const logoRightMm = Math.round(clampedRightPx * 0.264583 * 10) / 10;
+        const contactLines = [
+          settings.kopSurat.line4,
+          settings.kopSurat.line5,
+          settings.kopSurat.line6,
+        ].filter(Boolean);
+        const textHeightMm = 19 + Math.max(1, contactLines.length) * 3.8;
+        const kopHeightMm = Math.max(
+          textHeightMm,
+          leftLogoPng ? logoLeftMm : 0,
+          rightLogoPng ? logoRightMm : 0
+        );
+        const textStartY = cursorY + Math.max(0, (kopHeightMm - textHeightMm) / 2);
+
         if (leftLogoPng) {
-          doc.addImage(leftLogoPng, 'PNG', marginX, cursorY, logoSize, logoSize);
+          doc.addImage(
+            leftLogoPng,
+            'PNG',
+            marginX,
+            cursorY + Math.max(0, (kopHeightMm - logoLeftMm) / 2),
+            logoLeftMm,
+            logoLeftMm
+          );
         }
         if (rightLogoPng) {
           doc.addImage(
             rightLogoPng,
             'PNG',
-            pageWidth - marginX - logoSize,
-            cursorY,
-            logoSize,
-            logoSize
+            pageWidth - marginX - logoRightMm,
+            cursorY + Math.max(0, (kopHeightMm - logoRightMm) / 2),
+            logoRightMm,
+            logoRightMm
           );
         }
 
@@ -1535,30 +1581,25 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
         doc.setFont(pdfFont, 'normal');
         doc.setFontSize(10);
         if (settings.kopSurat.line1) {
-          doc.text(settings.kopSurat.line1, centerX, cursorY + 4, { align: 'center' });
+          doc.text(settings.kopSurat.line1, centerX, textStartY + 4, { align: 'center' });
         }
         if (settings.kopSurat.line2) {
           doc.setFont(pdfFont, 'bold');
           doc.setFontSize(11);
-          doc.text(settings.kopSurat.line2, centerX, cursorY + 9, { align: 'center' });
+          doc.text(settings.kopSurat.line2, centerX, textStartY + 9, { align: 'center' });
         }
         if (settings.kopSurat.line3) {
           doc.setFont(pdfFont, 'bold');
           doc.setFontSize(13);
-          doc.text(settings.kopSurat.line3, centerX, cursorY + 14.5, { align: 'center' });
+          doc.text(settings.kopSurat.line3, centerX, textStartY + 14.5, { align: 'center' });
         }
         doc.setFont(pdfFont, 'normal');
         doc.setFontSize(8.5);
-        const contactLines = [
-          settings.kopSurat.line4,
-          settings.kopSurat.line5,
-          settings.kopSurat.line6,
-        ].filter(Boolean);
         contactLines.forEach((line, idx) => {
-          doc.text(line, centerX, cursorY + 19 + idx * 3.8, { align: 'center' });
+          doc.text(line, centerX, textStartY + 19 + idx * 3.8, { align: 'center' });
         });
 
-        const lineY = cursorY + 19 + Math.max(1, contactLines.length) * 3.8 + 1;
+        const lineY = cursorY + kopHeightMm + 1.5;
         doc.setLineWidth(0.8);
         doc.line(marginX, lineY, pageWidth - marginX, lineY);
         doc.setLineWidth(0.25);
@@ -2104,12 +2145,8 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           doc.text(`NIP. ${personNip || '-'}`, xMm, yMm + 30);
         };
 
-        const stampOnKepsek =
-          sigPos.showStamp &&
-          (sigPos.stampTarget === 'kepsek' || sigPos.stampTarget === 'keduanya');
-        const stampOnGuru =
-          sigPos.showStamp &&
-          (sigPos.stampTarget === 'guru' || sigPos.stampTarget === 'keduanya');
+        const stampOnKepsek = sigPos.showStamp;
+        const stampOnGuru = false;
 
         let kepsekX = marginX + 6;
         let kepsekY = sigBaseY;
@@ -2197,10 +2234,9 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   const includeStudentsRoster = selectedReportTypes.includes('students_roster');
   const includeTeacherActivity = selectedReportTypes.includes('teacher_activity');
 
-  const stampOnKepsek =
-    sigPos.showStamp && (sigPos.stampTarget === 'kepsek' || sigPos.stampTarget === 'keduanya');
-  const stampOnGuru =
-    sigPos.showStamp && (sigPos.stampTarget === 'guru' || sigPos.stampTarget === 'keduanya');
+  const principalStampImage = resolvePrincipalStampImage(db);
+  const stampOnKepsek = sigPos.showStamp;
+  const stampOnGuru = false;
 
   const kepsekSigSizePx = Math.max(
     16,
@@ -2261,10 +2297,10 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             overflow: 'visible',
           }}
         >
-          {withStamp && activeSigner.schoolStampImage && (
+          {withStamp && principalStampImage && (
             <>
               <img
-                src={activeSigner.schoolStampImage}
+                src={principalStampImage}
                 alt="Stempel Sekolah"
                 draggable={false}
                 style={{
@@ -2844,13 +2880,13 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
               <div>
                 <span className="block text-[11px] font-semibold text-slate-700 mb-1">
                   <Stamp className="w-3 h-3 inline mr-1 text-indigo-600" />
-                  Gambar Stempel Sekolah
+                  Stempel Sekolah (Khusus Kepala Sekolah)
                 </span>
-                <div className="inline-flex items-center gap-1.5">
+                <div className="inline-flex items-center gap-2">
                   <div className="inline-flex items-center p-0.5 bg-slate-100 rounded-lg text-xs border border-slate-200">
                     <button
                       type="button"
-                      onClick={() => updateSigPos({ showStamp: true })}
+                      onClick={() => updateSigPos({ showStamp: true, stampTarget: 'kepsek' })}
                       className={`px-2.5 py-1 rounded-md font-semibold transition-colors ${
                         sigPos.showStamp
                           ? 'bg-white text-indigo-700 shadow-xs'
@@ -2861,7 +2897,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                     </button>
                     <button
                       type="button"
-                      onClick={() => updateSigPos({ showStamp: false })}
+                      onClick={() => updateSigPos({ showStamp: false, stampTarget: 'kepsek' })}
                       className={`px-2.5 py-1 rounded-md font-semibold transition-colors ${
                         !sigPos.showStamp
                           ? 'bg-white text-rose-700 shadow-xs'
@@ -2871,23 +2907,9 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                       Tidak
                     </button>
                   </div>
-
-                  {sigPos.showStamp && (
-                    <select
-                      value={sigPos.stampTarget}
-                      onChange={(e) =>
-                        updateSigPos({
-                          stampTarget: e.target.value as 'guru' | 'kepsek' | 'keduanya',
-                        })
-                      }
-                      aria-label="Target stempel sekolah"
-                      className="px-2 py-1.5 text-xs border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
-                    >
-                      <option value="guru">Di Blok Guru</option>
-                      <option value="kepsek">Di Blok Kepsek</option>
-                      <option value="keduanya">Di Keduanya</option>
-                    </select>
-                  )}
+                  <span className="text-[11px] font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-1 rounded-md">
+                    Hanya Blok Kepsek
+                  </span>
                 </div>
               </div>
             </div>
@@ -3423,6 +3445,126 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             </div>
           </div>
 
+          {showKop && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-slate-800">
+                  Ukuran Logo Kop Surat Dinas (Kiri &amp; Kanan)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setKopLeftSize(72);
+                    setKopRightSize(72);
+                  }}
+                  className="px-2.5 py-1 rounded-md border border-slate-200 bg-white hover:bg-slate-100 text-[11px] font-semibold text-slate-600 inline-flex items-center gap-1"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  Reset Logo (72px)
+                </button>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                <div className="bg-white rounded-lg border border-slate-200 p-2.5 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-700 tabular-nums">
+                      Logo Kiri ({kopLeftSize}px)
+                    </span>
+                    <div className="inline-flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setKopLeftSize((v) => Math.max(28, v - 4))}
+                        aria-label="Perkecil logo kiri kop surat"
+                        className="w-5 h-5 rounded border border-slate-200 bg-white hover:bg-slate-100 font-bold text-slate-700"
+                      >
+                        -
+                      </button>
+                      <input
+                        type="number"
+                        min={28}
+                        max={150}
+                        value={kopLeftSize}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          if (!Number.isNaN(v)) {
+                            setKopLeftSize(Math.max(28, Math.min(150, v)));
+                          }
+                        }}
+                        aria-label="Ukuran logo kiri kop surat px"
+                        className="w-12 px-1 py-0.5 text-center border border-slate-200 rounded text-[11px] font-semibold tabular-nums"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setKopLeftSize((v) => Math.min(150, v + 4))}
+                        aria-label="Perbesar logo kiri kop surat"
+                        className="w-5 h-5 rounded border border-slate-200 bg-white hover:bg-slate-100 font-bold text-slate-700"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                  <input
+                    type="range"
+                    min={28}
+                    max={150}
+                    value={kopLeftSize}
+                    onChange={(e) => setKopLeftSize(Number(e.target.value))}
+                    aria-label="Slider ukuran logo kiri kop surat"
+                    className="w-full accent-indigo-600"
+                  />
+                </div>
+
+                <div className="bg-white rounded-lg border border-slate-200 p-2.5 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-700 tabular-nums">
+                      Logo Kanan ({kopRightSize}px)
+                    </span>
+                    <div className="inline-flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setKopRightSize((v) => Math.max(28, v - 4))}
+                        aria-label="Perkecil logo kanan kop surat"
+                        className="w-5 h-5 rounded border border-slate-200 bg-white hover:bg-slate-100 font-bold text-slate-700"
+                      >
+                        -
+                      </button>
+                      <input
+                        type="number"
+                        min={28}
+                        max={150}
+                        value={kopRightSize}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          if (!Number.isNaN(v)) {
+                            setKopRightSize(Math.max(28, Math.min(150, v)));
+                          }
+                        }}
+                        aria-label="Ukuran logo kanan kop surat px"
+                        className="w-12 px-1 py-0.5 text-center border border-slate-200 rounded text-[11px] font-semibold tabular-nums"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setKopRightSize((v) => Math.min(150, v + 4))}
+                        aria-label="Perbesar logo kanan kop surat"
+                        className="w-5 h-5 rounded border border-slate-200 bg-white hover:bg-slate-100 font-bold text-slate-700"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                  <input
+                    type="range"
+                    min={28}
+                    max={150}
+                    value={kopRightSize}
+                    onChange={(e) => setKopRightSize(Number(e.target.value))}
+                    aria-label="Slider ukuran logo kanan kop surat"
+                    className="w-full accent-indigo-600"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Save Print Settings Footer Bar */}
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-3 border-t border-slate-200">
             <div className="flex items-center gap-2 text-xs">
@@ -3483,12 +3625,24 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <tbody>
                   <tr>
-                    <td style={{ width: '82px', textAlign: 'center', verticalAlign: 'middle', border: 'none' }}>
+                    <td
+                      style={{
+                        width: `${Math.max(72, kopLeftSize + 10)}px`,
+                        textAlign: 'center',
+                        verticalAlign: 'middle',
+                        border: 'none',
+                      }}
+                    >
                       {settings.kopSurat.logoLeft && (
                         <img
                           src={settings.kopSurat.logoLeft}
                           alt="Logo Instansi Kiri"
-                          style={{ width: '72px', height: '72px', objectFit: 'contain', display: 'inline-block' }}
+                          style={{
+                            width: `${kopLeftSize}px`,
+                            height: `${kopLeftSize}px`,
+                            objectFit: 'contain',
+                            display: 'inline-block',
+                          }}
                         />
                       )}
                     </td>
@@ -3518,12 +3672,24 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                         <div style={{ fontSize: '11px' }}>{settings.kopSurat.line6}</div>
                       )}
                     </td>
-                    <td style={{ width: '82px', textAlign: 'center', verticalAlign: 'middle', border: 'none' }}>
+                    <td
+                      style={{
+                        width: `${Math.max(72, kopRightSize + 10)}px`,
+                        textAlign: 'center',
+                        verticalAlign: 'middle',
+                        border: 'none',
+                      }}
+                    >
                       {settings.kopSurat.logoRight && (
                         <img
                           src={settings.kopSurat.logoRight}
                           alt="Logo Sekolah Kanan"
-                          style={{ width: '72px', height: '72px', objectFit: 'contain', display: 'inline-block' }}
+                          style={{
+                            width: `${kopRightSize}px`,
+                            height: `${kopRightSize}px`,
+                            objectFit: 'contain',
+                            display: 'inline-block',
+                          }}
                         />
                       )}
                     </td>

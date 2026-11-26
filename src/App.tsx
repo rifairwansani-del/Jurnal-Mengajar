@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Loader2 } from 'lucide-react';
 import { AccountsView } from './components/AccountsView';
 import { DashboardView } from './components/DashboardView';
 import { ConfirmDialogState, ConfirmModal, ToastContainer, ToastItem } from './components/FeedbackUI';
@@ -18,9 +19,14 @@ import { getTodayISO } from './utils/portalHelpers';
 export default function App() {
   const {
     db,
+    authLoading,
+    signingIn,
+    dataLoading,
+    accessDeniedMessage,
+    pendingUserEmail,
+    fatalError,
+    loginWithGoogle,
     loginWithCredentials,
-    loginWithDemoSeed,
-    loginEmpty,
     logout,
     upsertJournal,
     importJournalsBatch,
@@ -48,6 +54,10 @@ export default function App() {
     restoreDatabase,
     resetAllData,
   } = usePortalStore();
+
+  if (fatalError) {
+    throw fatalError;
+  }
 
   useEffect(() => {
     document.title = db.settings.identity?.webTitle || 'Portal E-Guru v10.2';
@@ -129,25 +139,28 @@ export default function App() {
       {!db.session.isLoggedIn ? (
         <LoginView
           settings={db.settings}
-          onLogin={(email, password, academicYear, semester) => {
-            const res = loginWithCredentials(email, password, academicYear, semester);
-            if (res.ok) {
-              setActiveMenu('dashboard');
-              showToast('success', res.message);
-            }
-            return res;
-          }}
-          onDemoSeed={(academicYear, semester) => {
-            loginWithDemoSeed(academicYear, semester);
+          authLoading={authLoading || dataLoading}
+          signingIn={signingIn}
+          accessDeniedMessage={accessDeniedMessage}
+          pendingUserEmail={pendingUserEmail}
+          onGoogleLogin={async (academicYear, semester) => {
+            await loginWithGoogle(academicYear, semester);
             setActiveMenu('dashboard');
-            showToast('success', 'Data demo lengkap berhasil dimuat ke penyimpanan lokal.');
           }}
-          onStartEmpty={(email, academicYear, semester) => {
-            loginEmpty(email, academicYear, semester);
+          onCredentialsLogin={async (username, password, academicYear, semester) => {
+            await loginWithCredentials(username, password, academicYear, semester);
             setActiveMenu('dashboard');
-            showToast('info', 'Ruang kerja baru dimulai dengan data kosong.');
+          }}
+          onSwitchAccount={async () => {
+            await logout();
+            showToast('info', 'Silakan pilih akun Google lain.');
           }}
         />
+      ) : dataLoading ? (
+        <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center gap-3 text-slate-600">
+          <Loader2 className="w-7 h-7 animate-spin text-indigo-600" />
+          <p className="text-sm font-medium">Menyinkronkan data dari Cloud Firestore...</p>
+        </div>
       ) : (
         <Layout
           activeMenu={activeMenu}
@@ -155,8 +168,9 @@ export default function App() {
           settings={db.settings}
           session={db.session}
           onLogout={() => {
-            logout();
-            showToast('info', 'Anda telah keluar dari sesi lokal.');
+            void logout().then(() => {
+              showToast('info', 'Anda telah keluar dari sesi Portal E-Guru.');
+            });
           }}
         >
           {activeMenu === 'dashboard' && (

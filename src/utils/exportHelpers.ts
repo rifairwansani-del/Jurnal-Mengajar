@@ -82,6 +82,13 @@ export interface ActiveSignerInfo {
   schoolStampImage: string;
 }
 
+export function resolvePrincipalStampImage(db: PortalDatabase): string {
+  const kepsekAcc = db.accounts.find(
+    (a) => a.role === 'Kepala Sekolah' && a.status === 'Aktif' && Boolean(a.schoolStampImage)
+  );
+  return kepsekAcc?.schoolStampImage || db.settings.defaultSchoolStampImage || '';
+}
+
 export function resolveActiveSigner(
   db: PortalDatabase,
   overrideAccountId?: string
@@ -105,7 +112,7 @@ export function resolveActiveSigner(
     nip: account?.nip || settings.teacherNip,
     roleLabel: account?.role && account.role !== 'Admin' ? account.role : 'Guru Mata Pelajaran',
     signatureImage: account?.signatureImage || '',
-    schoolStampImage: account?.schoolStampImage || settings.defaultSchoolStampImage || '',
+    schoolStampImage: resolvePrincipalStampImage(db),
   };
 }
 
@@ -238,6 +245,8 @@ async function buildOfficialPrintHtml(options: {
 
   const showSigImage = settings.reportPrintPreferences?.showSignatureImage ?? true;
 
+  const principalStampImage = resolvePrincipalStampImage(db);
+
   const [leftLogoPng, rightLogoPng, kepsekSigPng, guruSigPng, stampPng] =
     await Promise.all([
       showKop ? imageUrlToPngDataUrl(settings.kopSurat.logoLeft) : Promise.resolve(null),
@@ -248,15 +257,20 @@ async function buildOfficialPrintHtml(options: {
       showTtdGuru && showSigImage
         ? imageUrlToPngDataUrl(signer.signatureImage)
         : Promise.resolve(null),
-      sigPos.showStamp ? imageUrlToPngDataUrl(signer.schoolStampImage) : Promise.resolve(null),
+      sigPos.showStamp ? imageUrlToPngDataUrl(principalStampImage) : Promise.resolve(null),
     ]);
+
+  const kopLeftPx = Math.max(28, Math.min(150, settings.kopSurat.logoLeftSize ?? 72));
+  const kopRightPx = Math.max(28, Math.min(150, settings.kopSurat.logoRightSize ?? 72));
+  const kopLeftColPx = Math.max(72, kopLeftPx + 12);
+  const kopRightColPx = Math.max(72, kopRightPx + 12);
 
   const kopHtml = showKop
     ? `
       <table style="width:100%; border-collapse:collapse; border-bottom:4px double #000; margin-bottom:16px; padding-bottom:8px;">
         <tr>
-          <td style="width:80px; text-align:center; vertical-align:middle; padding-bottom:8px;">
-            ${leftLogoPng ? `<img src="${leftLogoPng}" style="width:68px; height:68px; object-fit:contain;" />` : ''}
+          <td style="width:${kopLeftColPx}px; text-align:center; vertical-align:middle; padding-bottom:8px;">
+            ${leftLogoPng ? `<img src="${leftLogoPng}" style="width:${kopLeftPx}px; height:${kopLeftPx}px; object-fit:contain;" />` : ''}
           </td>
           <td style="text-align:center; vertical-align:middle; line-height:1.25; padding-bottom:8px;">
             ${settings.kopSurat.line1 ? `<div style="font-size:11pt; text-transform:uppercase;">${escapeHtml(settings.kopSurat.line1)}</div>` : ''}
@@ -266,8 +280,8 @@ async function buildOfficialPrintHtml(options: {
             ${settings.kopSurat.line5 ? `<div style="font-size:9pt;">${escapeHtml(settings.kopSurat.line5)}</div>` : ''}
             ${settings.kopSurat.line6 ? `<div style="font-size:9pt;">${escapeHtml(settings.kopSurat.line6)}</div>` : ''}
           </td>
-          <td style="width:80px; text-align:center; vertical-align:middle; padding-bottom:8px;">
-            ${rightLogoPng ? `<img src="${rightLogoPng}" style="width:68px; height:68px; object-fit:contain;" />` : ''}
+          <td style="width:${kopRightColPx}px; text-align:center; vertical-align:middle; padding-bottom:8px;">
+            ${rightLogoPng ? `<img src="${rightLogoPng}" style="width:${kopRightPx}px; height:${kopRightPx}px; object-fit:contain;" />` : ''}
           </td>
         </tr>
       </table>
@@ -323,10 +337,8 @@ async function buildOfficialPrintHtml(options: {
     </div>
   `;
 
-  const stampOnKepsek =
-    sigPos.showStamp && (sigPos.stampTarget === 'kepsek' || sigPos.stampTarget === 'keduanya');
-  const stampOnGuru =
-    sigPos.showStamp && (sigPos.stampTarget === 'guru' || sigPos.stampTarget === 'keduanya');
+  const stampOnKepsek = sigPos.showStamp;
+  const stampOnGuru = false;
 
   const kepsekBox = showTtdKepsek
     ? renderSigBox(
@@ -599,6 +611,7 @@ export async function exportDatasetToPdf(options: {
   let cursorY = 14;
 
   const showSigImage = settings.reportPrintPreferences?.showSignatureImage ?? true;
+  const principalStampImage = resolvePrincipalStampImage(db);
 
   const [leftLogoPng, rightLogoPng, kepsekSigPng, guruSigPng, stampPng] =
     await Promise.all([
@@ -606,35 +619,62 @@ export async function exportDatasetToPdf(options: {
       imageUrlToPngDataUrl(settings.kopSurat.logoRight),
       showSigImage ? imageUrlToPngDataUrl(settings.principalSignatureImage) : Promise.resolve(null),
       showSigImage ? imageUrlToPngDataUrl(signer.signatureImage) : Promise.resolve(null),
-      sigPos.showStamp ? imageUrlToPngDataUrl(signer.schoolStampImage) : Promise.resolve(null),
+      sigPos.showStamp ? imageUrlToPngDataUrl(principalStampImage) : Promise.resolve(null),
     ]);
 
   // Kop Surat
-  const logoSize = 19;
-  if (leftLogoPng) doc.addImage(leftLogoPng, 'PNG', marginX, cursorY, logoSize, logoSize);
+  const logoLeftPx = Math.max(28, Math.min(150, settings.kopSurat.logoLeftSize ?? 72));
+  const logoRightPx = Math.max(28, Math.min(150, settings.kopSurat.logoRightSize ?? 72));
+  const logoLeftMm = Math.round(logoLeftPx * 0.264583 * 10) / 10;
+  const logoRightMm = Math.round(logoRightPx * 0.264583 * 10) / 10;
+  const contactLines = [settings.kopSurat.line4, settings.kopSurat.line5, settings.kopSurat.line6].filter(Boolean);
+  const textHeightMm = 19 + Math.max(1, contactLines.length) * 3.8;
+  const kopHeightMm = Math.max(
+    textHeightMm,
+    leftLogoPng ? logoLeftMm : 0,
+    rightLogoPng ? logoRightMm : 0
+  );
+  const textStartY = cursorY + Math.max(0, (kopHeightMm - textHeightMm) / 2);
+
+  if (leftLogoPng) {
+    doc.addImage(
+      leftLogoPng,
+      'PNG',
+      marginX,
+      cursorY + Math.max(0, (kopHeightMm - logoLeftMm) / 2),
+      logoLeftMm,
+      logoLeftMm
+    );
+  }
   if (rightLogoPng) {
-    doc.addImage(rightLogoPng, 'PNG', pageWidth - marginX - logoSize, cursorY, logoSize, logoSize);
+    doc.addImage(
+      rightLogoPng,
+      'PNG',
+      pageWidth - marginX - logoRightMm,
+      cursorY + Math.max(0, (kopHeightMm - logoRightMm) / 2),
+      logoRightMm,
+      logoRightMm
+    );
   }
   const centerX = pageWidth / 2;
   doc.setFontSize(10);
-  if (settings.kopSurat.line1) doc.text(settings.kopSurat.line1, centerX, cursorY + 4, { align: 'center' });
+  if (settings.kopSurat.line1) doc.text(settings.kopSurat.line1, centerX, textStartY + 4, { align: 'center' });
   if (settings.kopSurat.line2) {
     doc.setFont(pdfFont, 'bold');
     doc.setFontSize(11);
-    doc.text(settings.kopSurat.line2, centerX, cursorY + 9, { align: 'center' });
+    doc.text(settings.kopSurat.line2, centerX, textStartY + 9, { align: 'center' });
   }
   if (settings.kopSurat.line3) {
     doc.setFont(pdfFont, 'bold');
     doc.setFontSize(13);
-    doc.text(settings.kopSurat.line3, centerX, cursorY + 14.5, { align: 'center' });
+    doc.text(settings.kopSurat.line3, centerX, textStartY + 14.5, { align: 'center' });
   }
   doc.setFont(pdfFont, 'normal');
   doc.setFontSize(8.5);
-  const contactLines = [settings.kopSurat.line4, settings.kopSurat.line5, settings.kopSurat.line6].filter(Boolean);
   contactLines.forEach((line, idx) => {
-    doc.text(line, centerX, cursorY + 19 + idx * 3.8, { align: 'center' });
+    doc.text(line, centerX, textStartY + 19 + idx * 3.8, { align: 'center' });
   });
-  const lineY = cursorY + 19 + Math.max(1, contactLines.length) * 3.8 + 1;
+  const lineY = cursorY + kopHeightMm + 1.5;
   doc.setLineWidth(0.8);
   doc.line(marginX, lineY, pageWidth - marginX, lineY);
   doc.setLineWidth(0.25);
@@ -739,10 +779,8 @@ export async function exportDatasetToPdf(options: {
     doc.text(`NIP. ${personNip || '-'}`, xMm, yMm + 29.5);
   };
 
-  const stampOnKepsek =
-    sigPos.showStamp && (sigPos.stampTarget === 'kepsek' || sigPos.stampTarget === 'keduanya');
-  const stampOnGuru =
-    sigPos.showStamp && (sigPos.stampTarget === 'guru' || sigPos.stampTarget === 'keduanya');
+  const stampOnKepsek = sigPos.showStamp;
+  const stampOnGuru = false;
 
   const usableWidth = pageWidth - marginX * 2;
   let kepsekX = marginX + 6;

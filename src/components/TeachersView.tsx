@@ -17,7 +17,7 @@ import {
   exportRowsToXlsx,
   printDatasetExact,
 } from '../utils/exportHelpers';
-import { getTodayISO } from '../utils/portalHelpers';
+import { compressImageFileToDataUrl, getTodayISO } from '../utils/portalHelpers';
 import { ConfirmDialogState } from './FeedbackUI';
 import { FormModal } from './FormModal';
 import { TableExportToolbar } from './TableExportToolbar';
@@ -102,18 +102,15 @@ export function TeachersView({
     setPhoto('');
   };
 
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 2 * 1024 * 1024) {
       onToast('error', 'Ukuran foto maksimal 2 MB.');
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') setPhoto(reader.result);
-    };
-    reader.readAsDataURL(file);
+    const compressed = await compressImageFileToDataUrl(file, 420, 200000);
+    setPhoto(compressed);
   };
 
   const handleSubmit = (e: React.FormEvent) => {

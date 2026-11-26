@@ -1,72 +1,96 @@
 import React, { useState } from 'react';
 import {
+  AlertCircle,
   ArrowRight,
   Calendar,
   Crown,
-  Database,
   Eye,
   EyeOff,
-  FilePlus2,
+  KeyRound,
   Layers,
+  Loader2,
   Lock,
+  LogOut,
+  ShieldCheck,
   User,
 } from 'lucide-react';
 import { SemesterType, SystemSettings } from '../types';
 
 interface LoginViewProps {
   settings: SystemSettings;
-  onLogin: (
-    email: string,
+  authLoading: boolean;
+  signingIn: boolean;
+  accessDeniedMessage: string | null;
+  pendingUserEmail: string | null;
+  onGoogleLogin: (academicYear: string, semester: SemesterType) => Promise<void>;
+  onCredentialsLogin: (
+    username: string,
     password: string,
     academicYear: string,
     semester: SemesterType
-  ) => { ok: boolean; message: string };
-  onDemoSeed: (academicYear: string, semester: SemesterType) => void;
-  onStartEmpty: (email: string, academicYear: string, semester: SemesterType) => void;
+  ) => Promise<void>;
+  onSwitchAccount: () => Promise<void>;
 }
 
 export function LoginView({
   settings,
-  onLogin,
-  onDemoSeed,
-  onStartEmpty,
+  authLoading,
+  signingIn,
+  accessDeniedMessage,
+  pendingUserEmail,
+  onGoogleLogin,
+  onCredentialsLogin,
+  onSwitchAccount,
 }: LoginViewProps) {
-  const [email, setEmail] = useState(settings.email || 'guru@sma1kudus.sch.id');
-  const [password, setPassword] = useState(settings.password || 'guru123');
-  const [showPassword, setShowPassword] = useState(false);
+  const [loginMode, setLoginMode] = useState<'credentials' | 'google'>('credentials');
   const [academicYear, setAcademicYear] = useState(settings.academicYear || '2025/2026');
   const [semester, setSemester] = useState<SemesterType>(settings.semester || 'Ganjil');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleGoogleClick = async () => {
+    setErrorMsg('');
+    try {
+      await onGoogleLogin(academicYear, semester);
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Gagal masuk dengan akun Google.'
+      );
+    }
+  };
+
+  const handleCredentialsSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
-    if (!email.trim() || !password.trim()) {
-      setErrorMsg('Email Guru dan Password wajib diisi.');
+    const cleanUser = username.trim();
+    if (!cleanUser || !password) {
+      setErrorMsg('Username dan password wajib diisi.');
       return;
     }
-    const res = onLogin(email, password, academicYear, semester);
-    if (!res.ok) {
-      setErrorMsg(res.message);
+    try {
+      await onCredentialsLogin(cleanUser, password, academicYear, semester);
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Username atau password tidak sesuai.'
+      );
     }
   };
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-gradient-to-b from-blue-500 via-sky-300 to-blue-200 flex items-center justify-center p-4 sm:p-6">
-      {/* Soft 3D Study-Room Background Atmosphere (No people, no animals) */}
+      {/* Soft 3D Study-Room Background Atmosphere */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
-        {/* Sunlit window glow */}
         <div className="absolute -top-24 right-[-10%] w-[460px] h-[520px] rounded-full bg-white/35 blur-3xl" />
         <div className="absolute top-12 left-[-8%] w-[360px] h-[360px] rounded-full bg-amber-200/35 blur-3xl" />
 
-        {/* Stylized wall clock */}
         <div className="hidden sm:flex absolute top-8 left-[22%] w-16 h-16 rounded-full bg-white/90 border-4 border-blue-700 shadow-lg items-center justify-center">
           <div className="w-1 h-4 bg-blue-900 rounded-full origin-bottom -translate-y-1.5 rotate-12" />
           <div className="w-1 h-3 bg-blue-600 rounded-full origin-bottom -translate-y-1 -rotate-45 absolute" />
           <div className="w-2 h-2 rounded-full bg-blue-800 absolute" />
         </div>
 
-        {/* Soft puffy clouds */}
         <div className="hidden md:block absolute top-10 right-[24%] w-32 h-12 rounded-full bg-white/85 shadow-md">
           <div className="absolute -top-5 left-5 w-14 h-14 rounded-full bg-white/90" />
           <div className="absolute -top-7 left-12 w-16 h-16 rounded-full bg-white/95" />
@@ -76,18 +100,15 @@ export function LoginView({
           <div className="absolute -top-5 left-10 w-12 h-12 rounded-full bg-white/90" />
         </div>
 
-        {/* Desk surface & pedestal */}
         <div className="absolute bottom-0 inset-x-0 h-28 bg-gradient-to-b from-blue-300/80 to-indigo-400/90 border-t border-white/50" />
         <div className="absolute bottom-14 left-1/2 -translate-x-1/2 w-[500px] max-w-[92vw] h-10 rounded-full bg-blue-700/25 blur-md" />
 
-        {/* Left decorative stacked books */}
         <div className="hidden lg:block absolute bottom-20 left-10 space-y-1 opacity-90">
           <div className="w-40 h-6 rounded-r-lg bg-blue-600 border-l-8 border-white shadow-md" />
           <div className="w-44 h-7 rounded-r-lg bg-indigo-700 border-l-8 border-sky-100 shadow-md" />
           <div className="w-48 h-7 rounded-r-lg bg-slate-800 border-l-8 border-blue-200 shadow-md" />
         </div>
 
-        {/* Right decorative stacked books */}
         <div className="hidden lg:block absolute bottom-20 right-10 space-y-1 opacity-90">
           <div className="w-36 h-6 rounded-l-lg bg-sky-500 border-r-8 border-white shadow-md ml-auto" />
           <div className="w-44 h-7 rounded-l-lg bg-blue-700 border-r-8 border-blue-100 shadow-md ml-auto" />
@@ -97,11 +118,9 @@ export function LoginView({
 
       {/* Main Claymorphic Login Card */}
       <div className="relative z-10 w-full max-w-[440px]">
-        {/* Pedestal base */}
         <div className="mx-auto w-[86%] h-4 bg-blue-700/35 rounded-b-full blur-[2px] -mb-2 translate-y-full" />
 
         <div className="bg-[#faf9f6] rounded-[2.25rem] p-6 sm:p-8 border-2 border-white shadow-[0_26px_60px_-15px_rgba(30,58,138,0.42),inset_0_-8px_18px_rgba(148,163,184,0.16),inset_0_4px_12px_rgba(255,255,255,0.95)]">
-          {/* Header with Logo / Crown Emblem */}
           <div className="text-center">
             <div className="inline-flex items-center justify-center relative mb-2">
               {settings.identity?.sidebarLogo ? (
@@ -123,61 +142,13 @@ export function LoginView({
               {settings.identity?.loginTitle || 'Selamat Datang'}
             </h1>
             <p className="mt-1 text-xs sm:text-sm font-medium text-slate-600">
-              {settings.identity?.loginSubtitle || 'Portal E-Guru v10.2 · Masuk untuk melanjutkan'}
+              {settings.identity?.loginSubtitle || 'Portal E-Guru v10.2 · Masuk Akun Portal'}
             </p>
           </div>
 
-          <form onSubmit={handleSubmit} className="mt-6 space-y-3.5">
-            {/* Email / Username Tactile Pill Input */}
-            <div>
-              <label htmlFor="login-email" className="sr-only">
-                Email Guru
-              </label>
-              <div className="flex items-center gap-3 bg-white rounded-full p-1.5 pr-4 border border-slate-100 shadow-[0_6px_18px_rgba(15,23,42,0.08),inset_0_2px_4px_rgba(255,255,255,1)] focus-within:ring-2 focus-within:ring-blue-500/40 transition-shadow">
-                <span className="w-10 h-10 rounded-full bg-gradient-to-b from-blue-500 to-blue-600 text-white shadow-[0_4px_10px_rgba(37,99,235,0.4)] flex items-center justify-center shrink-0">
-                  <User className="w-4 h-4" />
-                </span>
-                <input
-                  id="login-email"
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="Email Guru"
-                  className="w-full bg-transparent text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:outline-none"
-                />
-              </div>
-            </div>
-
-            {/* Password Tactile Pill Input */}
-            <div>
-              <label htmlFor="login-password" className="sr-only">
-                Password
-              </label>
-              <div className="flex items-center gap-3 bg-white rounded-full p-1.5 pr-3 border border-slate-100 shadow-[0_6px_18px_rgba(15,23,42,0.08),inset_0_2px_4px_rgba(255,255,255,1)] focus-within:ring-2 focus-within:ring-blue-500/40 transition-shadow">
-                <span className="w-10 h-10 rounded-full bg-gradient-to-b from-blue-500 to-blue-600 text-white shadow-[0_4px_10px_rgba(37,99,235,0.4)] flex items-center justify-center shrink-0">
-                  <Lock className="w-4 h-4" />
-                </span>
-                <input
-                  id="login-password"
-                  type={showPassword ? 'text' : 'password'}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Password"
-                  className="w-full bg-transparent text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((prev) => !prev)}
-                  className="p-1.5 rounded-full text-slate-400 hover:text-blue-600 transition-colors shrink-0"
-                  aria-label={showPassword ? 'Sembunyikan password' : 'Tampilkan password'}
-                >
-                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-
+          <div className="mt-5 space-y-4">
             {/* Tahun Ajaran & Semester Compact Tactile Pills */}
-            <div className="grid grid-cols-2 gap-2.5 pt-0.5">
+            <div className="grid grid-cols-2 gap-2.5">
               <div className="flex items-center gap-2 bg-white rounded-full p-1.5 pr-3 border border-slate-100 shadow-[0_4px_14px_rgba(15,23,42,0.06)]">
                 <span className="w-8 h-8 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
                   <Calendar className="w-3.5 h-3.5" />
@@ -214,49 +185,165 @@ export function LoginView({
               </div>
             </div>
 
+            {/* 2-Tab Mode Switcher */}
+            <div
+              role="tablist"
+              aria-label="Metode Login"
+              className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-slate-200/75 border border-white/80 shadow-inner"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={loginMode === 'credentials'}
+                onClick={() => {
+                  setLoginMode('credentials');
+                  setErrorMsg('');
+                }}
+                className={`py-2 px-3 rounded-xl text-xs font-bold transition-all inline-flex items-center justify-center gap-1.5 ${
+                  loginMode === 'credentials'
+                    ? 'bg-white text-blue-700 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-800'
+                }`}
+              >
+                <KeyRound className="w-3.5 h-3.5" />
+                <span>Username & Password</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={loginMode === 'google'}
+                onClick={() => {
+                  setLoginMode('google');
+                  setErrorMsg('');
+                }}
+                className={`py-2 px-3 rounded-xl text-xs font-bold transition-all inline-flex items-center justify-center gap-1.5 ${
+                  loginMode === 'google'
+                    ? 'bg-white text-blue-700 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-800'
+                }`}
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>Akun Google</span>
+              </button>
+            </div>
+
+            {accessDeniedMessage && (
+              <div className="rounded-2xl bg-amber-50 border border-amber-200 p-4 space-y-2.5">
+                <div className="flex items-start gap-2.5">
+                  <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="text-xs text-amber-900 space-y-1">
+                    <p className="font-bold">Akses Belum Diaktifkan</p>
+                    {pendingUserEmail && (
+                      <p className="font-mono-tabular text-[11px] text-amber-700">
+                        Akun: {pendingUserEmail}
+                      </p>
+                    )}
+                    <p className="leading-relaxed">{accessDeniedMessage}</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={onSwitchAccount}
+                  className="w-full py-2 px-3 rounded-xl bg-white border border-amber-300 hover:bg-amber-100/60 text-amber-900 text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  Ganti Akun Google Lain
+                </button>
+              </div>
+            )}
+
             {errorMsg && (
               <div className="px-4 py-2.5 rounded-2xl bg-rose-50 border border-rose-200 text-xs font-medium text-rose-700 text-center">
                 {errorMsg}
               </div>
             )}
 
-            {/* Primary Tactile 3D Login Button */}
-            <div className="pt-1">
-              <button
-                type="submit"
-                className="w-full py-3 px-6 rounded-full bg-gradient-to-b from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white text-sm font-bold tracking-wide shadow-[0_6px_0_#1d4ed8,0_12px_22px_rgba(37,99,235,0.35)] active:translate-y-1 active:shadow-[0_2px_0_#1d4ed8] transition-all flex items-center justify-center gap-2"
-              >
-                <span>Masuk</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
-            </div>
-          </form>
+            {loginMode === 'credentials' ? (
+              <form onSubmit={handleCredentialsSubmit} className="space-y-3">
+                <div className="relative">
+                  <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    id="login-username"
+                    type="text"
+                    autoComplete="username"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    placeholder="Username (contoh: budi.santoso)"
+                    aria-label="Username"
+                    className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-white border border-slate-200 text-sm text-slate-800 placeholder:text-slate-400 shadow-xs focus:outline-none focus:border-blue-500"
+                  />
+                </div>
 
-          {/* Local Access Options (Without Social Media) */}
-          <div className="mt-6 pt-4 border-t border-slate-200/80 space-y-2.5">
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    id="login-password"
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Password akun"
+                    aria-label="Password"
+                    className="w-full pl-10 pr-10 py-2.5 rounded-xl bg-white border border-slate-200 text-sm text-slate-800 placeholder:text-slate-400 shadow-xs focus:outline-none focus:border-blue-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    aria-label={showPassword ? 'Sembunyikan password' : 'Tampilkan password'}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5"
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={authLoading || signingIn}
+                  className="w-full py-3.5 px-6 rounded-full bg-gradient-to-b from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 disabled:opacity-60 disabled:cursor-not-allowed text-white text-sm font-bold tracking-wide shadow-[0_6px_0_#1d4ed8,0_12px_22px_rgba(37,99,235,0.35)] active:translate-y-1 active:shadow-[0_2px_0_#1d4ed8] transition-all flex items-center justify-center gap-2.5"
+                >
+                  {authLoading || signingIn ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>{authLoading ? 'Memeriksa Sesi...' : 'Memverifikasi Akun...'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <KeyRound className="w-4 h-4" />
+                      <span>Masuk dengan Username</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </>
+                  )}
+                </button>
+              </form>
+            ) : (
+              <button
+                type="button"
+                disabled={authLoading || signingIn}
+                onClick={handleGoogleClick}
+                className="w-full py-3.5 px-6 rounded-full bg-gradient-to-b from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 disabled:opacity-60 disabled:cursor-not-allowed text-white text-sm font-bold tracking-wide shadow-[0_6px_0_#1d4ed8,0_12px_22px_rgba(37,99,235,0.35)] active:translate-y-1 active:shadow-[0_2px_0_#1d4ed8] transition-all flex items-center justify-center gap-2.5"
+              >
+                {authLoading || signingIn ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>{authLoading ? 'Memeriksa Sesi...' : 'Menghubungkan ke Google...'}</span>
+                  </>
+                ) : (
+                  <>
+                    <ShieldCheck className="w-4 h-4" />
+                    <span>Masuk dengan Google</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </>
+                )}
+              </button>
+            )}
+          </div>
+
+          <div className="mt-6 pt-4 border-t border-slate-200/80">
             <div className="flex items-center gap-3 text-[11px] font-medium text-slate-400">
               <span className="h-px flex-1 bg-slate-200" />
-              <span>{settings.identity?.loginFooterNote || 'Akses Penyimpanan Lokal'}</span>
+              <span>{settings.identity?.loginFooterNote || 'Portal E-Guru Cloud'}</span>
               <span className="h-px flex-1 bg-slate-200" />
             </div>
-
-            <button
-              type="button"
-              onClick={() => onDemoSeed(academicYear, semester)}
-              className="w-full py-2.5 px-4 rounded-full bg-slate-900 hover:bg-slate-800 text-white text-xs sm:text-sm font-semibold shadow-[0_4px_12px_rgba(15,23,42,0.18)] transition-colors flex items-center justify-center gap-2"
-            >
-              <Database className="w-4 h-4 text-blue-400" />
-              Masuk dengan Data Demo (Auto-Seed)
-            </button>
-
-            <button
-              type="button"
-              onClick={() => onStartEmpty(email, academicYear, semester)}
-              className="w-full py-2.5 px-4 rounded-full bg-white hover:bg-slate-50 text-slate-700 text-xs sm:text-sm font-semibold border border-slate-200 shadow-xs transition-colors flex items-center justify-center gap-2"
-            >
-              <FilePlus2 className="w-4 h-4 text-slate-500" />
-              Masuk Kosong / Mulai Baru
-            </button>
           </div>
         </div>
       </div>

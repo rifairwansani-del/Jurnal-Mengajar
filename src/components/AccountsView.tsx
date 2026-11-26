@@ -4,6 +4,7 @@ import {
   Eye,
   EyeOff,
   KeyRound,
+  Lock,
   Pencil,
   PenLine,
   Plus,
@@ -13,8 +14,10 @@ import {
   Stamp,
   Trash2,
   Upload,
+  User,
   UserPlus,
 } from 'lucide-react';
+import { DEFAULT_ADMIN_EMAIL } from '../data/seedData';
 import { AccountRole, PortalDatabase, UserAccount } from '../types';
 import {
   exportDatasetToPdf,
@@ -23,7 +26,7 @@ import {
   exportRowsToXlsx,
   printDatasetExact,
 } from '../utils/exportHelpers';
-import { getTodayISO } from '../utils/portalHelpers';
+import { compressImageFileToDataUrl, getTodayISO, normalizeEmailId } from '../utils/portalHelpers';
 import { ConfirmDialogState } from './FeedbackUI';
 import { FormModal } from './FormModal';
 import { SignaturePadModal } from './SignaturePadModal';
@@ -31,7 +34,11 @@ import { TableExportToolbar } from './TableExportToolbar';
 
 interface AccountsViewProps {
   db: PortalDatabase;
-  onUpsertAccount: (account: UserAccount) => void;
+  onUpsertAccount: (
+    account: UserAccount,
+    previousId?: string,
+    credentials?: { username?: string; password?: string }
+  ) => Promise<{ ok: boolean; error?: string }>;
   onImportAccountsBatch: (
     incoming: Omit<UserAccount, 'id' | 'lastLogin'>[]
   ) => { added: number; updated: number };
@@ -49,7 +56,7 @@ const ROLE_OPTIONS: AccountRole[] = [
   'Kepala Sekolah',
 ];
 
-const ACCOUNT_HEADERS = ['Nama Pengguna', 'Email Login', 'Password', 'Peran', 'NIP', 'Status'];
+const ACCOUNT_HEADERS = ['Nama Pengguna', 'Email Google', 'Peran', 'NIP', 'Status'];
 
 export function AccountsView({
   db,
@@ -61,39 +68,48 @@ export function AccountsView({
   onConfirm,
 }: AccountsViewProps) {
   const { accounts, teachers, settings, session } = db;
+  const currentEmailLower = normalizeEmailId(session.email || session.accountId || '');
+  const isAdminSession =
+    session.userRole === 'Admin' || currentEmailLower === DEFAULT_ADMIN_EMAIL;
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [showPass, setShowPass] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [role, setRole] = useState<AccountRole>('Guru Mapel');
   const [nip, setNip] = useState('');
   const [status, setStatus] = useState<'Aktif' | 'Nonaktif'>('Aktif');
   const [signatureImage, setSignatureImage] = useState('');
-  const [schoolStampImage, setSchoolStampImage] = useState(settings.defaultSchoolStampImage || '');
+  const [schoolStampImage, setSchoolStampImage] = useState('');
   const [sigModalOpen, setSigModalOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const [pasteText, setPasteText] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState('ALL');
-  const [visiblePasswords, setVisiblePasswords] = useState<Set<string>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [formModalOpen, setFormModalOpen] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
+
+  const editingAccount = editingId ? accounts.find((a) => a.id === editingId) : undefined;
+  const isSelfLimitedEdit = Boolean(editingId && !isAdminSession);
 
   const resetForm = () => {
     setEditingId(null);
     setName('');
     setEmail('');
+    setUsername('');
     setPassword('');
+    setShowPassword(false);
     setRole('Guru Mapel');
     setNip('');
     setStatus('Aktif');
     setSignatureImage('');
-    setSchoolStampImage(settings.defaultSchoolStampImage || '');
+    setSchoolStampImage('');
   };
 
   const handleLinkFromTeacher = (teacherId: string) => {
@@ -102,104 +118,202 @@ export function AccountsView({
     setName(t.name);
     setEmail(t.email || '');
     setNip(t.nip || '');
+    if (!username && t.email && t.email.includes('@')) {
+      const prefix = t.email.split('@')[0].toLowerCase().replace(/[^a-z0-9._-]/g, '');
+      if (prefix.length >= 3) setUsername(prefix);
+    }
   };
 
-  const handleStampUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleStampUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 2 * 1024 * 1024) {
       onToast('error', 'Ukuran stempel maksimal 2 MB.');
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') setSchoolStampImage(reader.result);
-    };
-    reader.readAsDataURL(file);
+    const compressed = await compressImageFileToDataUrl(file, 360, 200000);
+    setSchoolStampImage(compressed);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !email.trim() || !password.trim()) {
-      onToast('error', 'Nama, Email, dan Password wajib diisi.');
+    if (!name.trim()) {
+      onToast('error', 'Nama lengkap pengguna wajib diisi.');
       return;
     }
 
-    const duplicate = accounts.find(
-      (a) =>
-        a.email.trim().toLowerCase() === email.trim().toLowerCase() &&
-        a.id !== editingId
-    );
-    if (duplicate) {
-      onToast('error', `Email "${email.trim()}" sudah digunakan oleh akun lain.`);
+    const cleanUsername = username.trim().toLowerCase();
+    const rawEmailLower = normalizeEmailId(email);
+
+    if (!rawEmailLower && !cleanUsername) {
+      onToast('error', 'Isi minimal Username Login atau Email Google.');
+      return;
+    }
+
+    if (cleanUsername && !/^[a-z0-9._-]{3,40}$/.test(cleanUsername)) {
+      onToast(
+        'error',
+        'Username harus 3–40 karakter (huruf kecil, angka, titik, garis bawah, atau tanda hubung).'
+      );
+      return;
+    }
+
+    const emailLower =
+      rawEmailLower || (cleanUsername ? `${cleanUsername}@akun.portal` : '');
+
+    if (!emailLower || !/^[^@]+@[^@]+\.[^@]+$/.test(emailLower)) {
+      onToast('error', 'Alamat Email tidak valid.');
       return;
     }
 
     const existing = editingId ? accounts.find((a) => a.id === editingId) : undefined;
-    onUpsertAccount({
-      id: editingId ?? `acc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      name: name.trim(),
-      email: email.trim(),
-      password,
-      role,
-      nip: nip.trim(),
-      status,
-      lastLogin: existing?.lastLogin ?? '-',
-      signatureImage,
-      schoolStampImage,
-    });
 
-    onToast(
-      'success',
-      editingId ? 'Akun pengguna & TTD berhasil diperbarui.' : 'Akun pengguna baru berhasil dibuat.'
+    if (password && password.length < 6) {
+      onToast('error', 'Password minimal 6 karakter.');
+      return;
+    }
+
+    if (!rawEmailLower && !existing?.hasPassword && !password) {
+      onToast('error', 'Password minimal 6 karakter wajib diisi jika akun dibuat tanpa Email Google.');
+      return;
+    }
+
+    if (cleanUsername && !existing?.hasPassword && !password) {
+      onToast('error', 'Isi password (min. 6 karakter) untuk mengaktifkan login dengan username.');
+      return;
+    }
+
+    const duplicateEmail = accounts.find(
+      (a) => normalizeEmailId(a.email) === emailLower && a.id !== editingId
     );
-    resetForm();
-    setFormModalOpen(false);
+    if (duplicateEmail) {
+      onToast('error', `Email "${emailLower}" sudah digunakan oleh akun lain.`);
+      return;
+    }
+
+    if (cleanUsername) {
+      const duplicateUser = accounts.find(
+        (a) => (a.username || '').trim().toLowerCase() === cleanUsername && a.id !== editingId
+      );
+      if (duplicateUser) {
+        onToast('error', `Username "${cleanUsername}" sudah digunakan oleh akun lain.`);
+        return;
+      }
+    }
+
+    const credentialsPayload =
+      cleanUsername || password
+        ? {
+            username: cleanUsername || existing?.username || '',
+            password: password || undefined,
+          }
+        : undefined;
+
+    setSubmitting(true);
+    try {
+      const resolvedRole = isSelfLimitedEdit && existing ? existing.role : role;
+      const resolvedStamp =
+        resolvedRole === 'Kepala Sekolah' ? schoolStampImage : '';
+      const result = await onUpsertAccount(
+        {
+          id: emailLower,
+          name: name.trim(),
+          email: emailLower,
+          username: cleanUsername || existing?.username || '',
+          hasPassword: Boolean(password || existing?.hasPassword),
+          role: resolvedRole,
+          nip: nip.trim(),
+          status: isSelfLimitedEdit && existing ? existing.status : status,
+          lastLogin: existing?.lastLogin ?? '-',
+          signatureImage,
+          schoolStampImage: resolvedStamp,
+        },
+        editingId && editingId !== emailLower ? editingId : undefined,
+        credentialsPayload
+      );
+
+      if (!result.ok) {
+        onToast('error', result.error || 'Gagal menyimpan data akun.');
+        return;
+      }
+
+      onToast(
+        'success',
+        editingId ? 'Akun pengguna & kredensial berhasil diperbarui.' : 'Akun pengguna baru berhasil didaftarkan.'
+      );
+      resetForm();
+      setFormModalOpen(false);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleEdit = (acc: UserAccount) => {
+    const isSelf =
+      normalizeEmailId(acc.email) === currentEmailLower ||
+      (Boolean(session.accountId) && acc.id === session.accountId);
+    if (!isAdminSession && !isSelf) {
+      onToast('error', 'Hanya Admin yang dapat mengedit akun pengguna lain.');
+      return;
+    }
     setEditingId(acc.id);
     setName(acc.name);
     setEmail(acc.email);
-    setPassword(acc.password);
+    setUsername(acc.username || '');
+    setPassword('');
+    setShowPassword(false);
     setRole(acc.role);
     setNip(acc.nip);
     setStatus(acc.status);
     setSignatureImage(acc.signatureImage || '');
-    setSchoolStampImage(acc.schoolStampImage || settings.defaultSchoolStampImage || '');
+    setSchoolStampImage(
+      acc.role === 'Kepala Sekolah'
+        ? acc.schoolStampImage || settings.defaultSchoolStampImage || ''
+        : ''
+    );
     setFormModalOpen(true);
   };
 
-  const handleToggleStatus = (acc: UserAccount) => {
-    if (acc.email.toLowerCase() === session.email.toLowerCase() && acc.status === 'Aktif') {
+  const handleToggleStatus = async (acc: UserAccount) => {
+    if (!isAdminSession) {
+      onToast('error', 'Hanya Admin yang dapat mengubah status akun.');
+      return;
+    }
+    const emailLower = normalizeEmailId(acc.email);
+    if (emailLower === DEFAULT_ADMIN_EMAIL) {
+      onToast('error', 'Admin utama tidak dapat dinonaktifkan.');
+      return;
+    }
+    if (emailLower === currentEmailLower && acc.status === 'Aktif') {
       onToast('error', 'Tidak dapat menonaktifkan akun yang sedang login saat ini.');
       return;
     }
     const nextStatus = acc.status === 'Aktif' ? 'Nonaktif' : 'Aktif';
-    onUpsertAccount({ ...acc, status: nextStatus });
+    const result = await onUpsertAccount({ ...acc, status: nextStatus });
+    if (!result.ok) {
+      onToast('error', result.error || 'Gagal mengubah status akun.');
+      return;
+    }
     onToast('info', `Status akun ${acc.name} diubah menjadi ${nextStatus}.`);
   };
 
-  const handleResetPassword = (acc: UserAccount) => {
-    onConfirm({
-      title: 'Reset Password Akun',
-      description: `Setel ulang password akun "${acc.name}" (${acc.email}) menjadi default "guru123"?`,
-      confirmLabel: 'Reset Password',
-      onConfirm: () => {
-        onUpsertAccount({ ...acc, password: 'guru123' });
-        onToast('success', `Password ${acc.name} direset ke "guru123".`);
-      },
-    });
-  };
-
   const handleDelete = (acc: UserAccount) => {
-    if (acc.email.toLowerCase() === session.email.toLowerCase()) {
+    if (!isAdminSession) {
+      onToast('error', 'Hanya Admin yang dapat menghapus akun.');
+      return;
+    }
+    const emailLower = normalizeEmailId(acc.email);
+    if (emailLower === DEFAULT_ADMIN_EMAIL) {
+      onToast('error', 'Akun Admin utama tidak dapat dihapus.');
+      return;
+    }
+    if (emailLower === currentEmailLower) {
       onToast('error', 'Tidak dapat menghapus akun yang sedang aktif login.');
       return;
     }
     onConfirm({
       title: 'Hapus Akun Pengguna',
-      description: `Hapus akun login "${acc.name}" (${acc.email}) dari sistem lokal?`,
+      description: `Hapus akses login "${acc.name}" (${acc.username ? `@${acc.username}` : acc.email}) dari sistem?`,
       confirmLabel: 'Hapus Akun',
       danger: true,
       onConfirm: () => {
@@ -214,15 +328,6 @@ export function AccountsView({
     });
   };
 
-  const toggleShowRowPassword = (id: string) => {
-    setVisiblePasswords((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
   const filteredAccounts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return accounts.filter((a) => {
@@ -231,6 +336,7 @@ export function AccountsView({
         return (
           a.name.toLowerCase().includes(q) ||
           a.email.toLowerCase().includes(q) ||
+          (a.username || '').toLowerCase().includes(q) ||
           a.nip.toLowerCase().includes(q)
         );
       }
@@ -260,7 +366,7 @@ export function AccountsView({
     const count = selectedIds.size;
     onConfirm({
       title: 'Hapus Akun Terpilih',
-      description: `Hapus ${count} akun yang dipilih? (Akun yang sedang aktif login akan tetap dipertahankan).`,
+      description: `Hapus ${count} akun yang dipilih? (Akun yang sedang aktif login dan Admin utama akan tetap dipertahankan).`,
       confirmLabel: `Hapus ${count} Akun`,
       danger: true,
       onConfirm: () => {
@@ -280,16 +386,17 @@ export function AccountsView({
   }, [filteredAccounts, selectedIds]);
 
   const buildAccountMatrix = () => {
-    const headers = ['No', 'Nama Pengguna', 'NIP', 'Email Login', 'Peran', 'Status', 'TTD Digital', 'Stempel', 'Login Terakhir'];
+    const headers = ['No', 'Nama Pengguna', 'NIP', 'Username', 'Email Google', 'Peran', 'Status', 'TTD Digital', 'Stempel', 'Login Terakhir'];
     const rows = exportSourceAccounts.map((a, idx) => [
       idx + 1,
       a.name,
       a.nip || '-',
+      a.username || '-',
       a.email,
       a.role,
       a.status,
       a.signatureImage ? 'Tersedia' : 'Belum Ada',
-      a.schoolStampImage ? 'Tersedia' : 'Belum Ada',
+      a.role === 'Kepala Sekolah' && a.schoolStampImage ? 'Tersedia' : '-',
       a.lastLogin || '-',
     ]);
     return { headers, rows };
@@ -300,7 +407,7 @@ export function AccountsView({
       'Template Akun',
       ACCOUNT_HEADERS,
       [
-        ['Budi Santoso, S.Pd.', 'budi@sekolah.sch.id', 'guru123', 'Guru Mapel', '19900101 201801 1 001', 'Aktif'],
+        ['Budi Santoso, S.Pd.', 'budi@sma1kudus.sch.id', 'Guru Mapel', '19900101 201801 1 001', 'Aktif'],
       ],
       'Template_Impor_Akun_E-Guru.xlsx'
     );
@@ -314,21 +421,21 @@ export function AccountsView({
       const clean = (i: number) => String(cols[i] ?? '').trim();
       if (index === 0 && clean(0).toLowerCase().includes('nama')) return;
       const aName = clean(0);
-      const aEmail = clean(1);
-      if (!aName || !aEmail) return;
-      const rawRole = clean(3);
+      const aEmail = normalizeEmailId(clean(1));
+      if (!aName || !aEmail || !aEmail.includes('@')) return;
+      const rawRole = clean(2);
       const validRole: AccountRole = ROLE_OPTIONS.includes(rawRole as AccountRole)
         ? (rawRole as AccountRole)
         : 'Guru Mapel';
       result.push({
         name: aName,
         email: aEmail,
-        password: clean(2) || 'guru123',
         role: validRole,
-        nip: clean(4),
-        status: clean(5) === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
+        nip: clean(3),
+        status: clean(4) === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
         signatureImage: '',
-        schoolStampImage: settings.defaultSchoolStampImage || '',
+        schoolStampImage:
+          validRole === 'Kepala Sekolah' ? settings.defaultSchoolStampImage || '' : '',
       });
     });
     return result;
@@ -386,31 +493,33 @@ export function AccountsView({
               Manajemen Akun Pengguna ({accounts.length})
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Atur hak akses, kredensial, tanda tangan digital, dan stempel sekolah milik tiap akun
+              Kelola akun login Username & Password atau Email Google beserta tanda tangan digital dan stempel sekolah
             </p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setImportModalOpen(true)}
-            className="px-3.5 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs sm:text-sm font-semibold transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
-          >
-            <Upload className="w-4 h-4 text-indigo-600" />
-            <span>Impor Akun Massal</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              resetForm();
-              setFormModalOpen(true);
-            }}
-            className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs sm:text-sm font-semibold transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shadow-xs"
-          >
-            <UserPlus className="w-4 h-4" />
-            <span>Tambah Akun Pengguna Baru</span>
-          </button>
-        </div>
+        {isAdminSession && (
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setImportModalOpen(true)}
+              className="px-3.5 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs sm:text-sm font-semibold transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
+            >
+              <Upload className="w-4 h-4 text-indigo-600" />
+              <span>Impor Akun Massal</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                resetForm();
+                setFormModalOpen(true);
+              }}
+              className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs sm:text-sm font-semibold transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shadow-xs"
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>Tambah Akun Pengguna Baru</span>
+            </button>
+          </div>
+        )}
       </section>
 
       {/* Tabel Daftar Akun */}
@@ -447,8 +556,8 @@ export function AccountsView({
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Cari nama / email..."
-                  className="pl-9 pr-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600 w-48 sm:w-56"
+                  placeholder="Cari nama / username / email..."
+                  className="pl-9 pr-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600 w-48 sm:w-60"
                 />
               </div>
             </div>
@@ -463,8 +572,8 @@ export function AccountsView({
             <TableExportToolbar
               selectedCount={selectedIds.size}
               defaultOrientation="portrait"
-              onDeleteSelected={handleBulkDelete}
-              onDownloadTemplate={handleDownloadTemplate}
+              onDeleteSelected={isAdminSession ? handleBulkDelete : undefined}
+              onDownloadTemplate={isAdminSession ? handleDownloadTemplate : undefined}
               onExportXlsx={() => {
                 const { headers, rows } = buildAccountMatrix();
                 exportRowsToXlsx('Data Akun', headers, rows, `Daftar_Akun_E-Guru_${getTodayISO()}.xlsx`);
@@ -537,10 +646,10 @@ export function AccountsView({
                 </th>
                 <th className="px-3 py-3 w-10 text-center">No</th>
                 <th className="px-3 py-3 min-w-[180px]">Nama Pengguna</th>
-                <th className="px-3 py-3 whitespace-nowrap">Email Login</th>
+                <th className="px-3 py-3 whitespace-nowrap">Username & Email</th>
                 <th className="px-3 py-3 whitespace-nowrap">Peran</th>
                 <th className="px-3 py-3 whitespace-nowrap">TTD & Stempel</th>
-                <th className="px-3 py-3 whitespace-nowrap">Password</th>
+                <th className="px-3 py-3 whitespace-nowrap">Login Terakhir</th>
                 <th className="px-3 py-3 whitespace-nowrap">Status</th>
                 <th className="px-3 py-3 whitespace-nowrap text-right">Aksi</th>
               </tr>
@@ -555,9 +664,11 @@ export function AccountsView({
               ) : (
                 filteredAccounts.map((acc, idx) => {
                   const isCurrentUser =
-                    acc.email.trim().toLowerCase() === session.email.trim().toLowerCase();
-                  const showRowPass = visiblePasswords.has(acc.id);
+                    normalizeEmailId(acc.email) === currentEmailLower ||
+                    (Boolean(session.accountId) && acc.id === session.accountId);
+                  const canEditRow = isAdminSession || isCurrentUser;
                   const checked = selectedIds.has(acc.id);
+                  const isSyntheticEmail = acc.email.endsWith('@akun.portal');
                   return (
                     <tr
                       key={acc.id}
@@ -586,7 +697,32 @@ export function AccountsView({
                           <p className="text-xs text-slate-500 font-mono-tabular">NIP {acc.nip}</p>
                         )}
                       </td>
-                      <td className="px-3 py-3 text-xs whitespace-nowrap">{acc.email}</td>
+                      <td className="px-3 py-3 text-xs whitespace-nowrap">
+                        <div className="space-y-1">
+                          {acc.username && (
+                            <div className="inline-flex items-center gap-1.5 mr-2">
+                              <span className="font-mono-tabular font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded">
+                                @{acc.username}
+                              </span>
+                              {acc.hasPassword && (
+                                <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded inline-flex items-center gap-0.5">
+                                  <KeyRound className="w-2.5 h-2.5" />
+                                  Password Aktif
+                                </span>
+                              )}
+                            </div>
+                          )}
+                          <p className="text-slate-600">
+                            {isSyntheticEmail ? (
+                              <span className="text-[11px] text-slate-400">
+                                Login Username & Password
+                              </span>
+                            ) : (
+                              acc.email
+                            )}
+                          </p>
+                        </div>
+                      </td>
                       <td className="px-3 py-3 text-xs font-semibold text-slate-800 whitespace-nowrap">
                         {acc.role}
                       </td>
@@ -601,7 +737,7 @@ export function AccountsView({
                           ) : (
                             <span className="text-[11px] text-slate-400">Tanpa TTD</span>
                           )}
-                          {acc.schoolStampImage && (
+                          {acc.role === 'Kepala Sekolah' && acc.schoolStampImage && (
                             <img
                               src={acc.schoolStampImage}
                               alt="Stempel"
@@ -610,18 +746,8 @@ export function AccountsView({
                           )}
                         </div>
                       </td>
-                      <td className="px-3 py-3 whitespace-nowrap">
-                        <div className="inline-flex items-center gap-1.5 font-mono-tabular text-xs">
-                          <span>{showRowPass ? acc.password : '••••••••'}</span>
-                          <button
-                            type="button"
-                            onClick={() => toggleShowRowPassword(acc.id)}
-                            className="p-1 text-slate-400 hover:text-slate-700"
-                            aria-label="Tampilkan password"
-                          >
-                            {showRowPass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                          </button>
-                        </div>
+                      <td className="px-3 py-3 whitespace-nowrap text-xs font-mono-tabular text-slate-500">
+                        {acc.lastLogin || '-'}
                       </td>
                       <td className="px-3 py-3 text-xs font-semibold whitespace-nowrap">
                         <span
@@ -634,37 +760,39 @@ export function AccountsView({
                       </td>
                       <td className="px-3 py-3 whitespace-nowrap text-right">
                         <div className="inline-flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => handleToggleStatus(acc)}
-                            className="px-2 py-1.5 rounded-md border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-100 inline-flex items-center gap-1"
-                            title={acc.status === 'Aktif' ? 'Nonaktifkan Akun' : 'Aktifkan Akun'}
-                          >
-                            <Power className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleResetPassword(acc)}
-                            className="px-2 py-1.5 rounded-md border border-amber-200 bg-amber-50/70 text-xs font-medium text-amber-800 hover:bg-amber-100 inline-flex items-center gap-1"
-                            title="Reset Password ke default"
-                          >
-                            <KeyRound className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleEdit(acc)}
-                            className="px-2 py-1.5 rounded-md border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-100 inline-flex items-center gap-1"
-                          >
-                            <Pencil className="w-3.5 h-3.5" />
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDelete(acc)}
-                            className="px-2 py-1.5 rounded-md border border-rose-200 text-xs font-medium text-rose-700 bg-rose-50/60 hover:bg-rose-100 inline-flex items-center gap-1"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          {isAdminSession && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void handleToggleStatus(acc);
+                              }}
+                              className="px-2 py-1.5 rounded-md border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-100 inline-flex items-center gap-1"
+                              title={acc.status === 'Aktif' ? 'Nonaktifkan Akun' : 'Aktifkan Akun'}
+                            >
+                              <Power className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          {canEditRow ? (
+                            <button
+                              type="button"
+                              onClick={() => handleEdit(acc)}
+                              className="px-2 py-1.5 rounded-md border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-100 inline-flex items-center gap-1"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                              Edit
+                            </button>
+                          ) : (
+                            <span className="text-[11px] text-slate-400 px-1">Hanya Baca</span>
+                          )}
+                          {isAdminSession && (
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(acc)}
+                              className="px-2 py-1.5 rounded-md border border-rose-200 text-xs font-medium text-rose-700 bg-rose-50/60 hover:bg-rose-100 inline-flex items-center gap-1"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -678,8 +806,8 @@ export function AccountsView({
 
       <FormModal
         open={formModalOpen}
-        title={editingId ? 'Edit Akun, TTD Digital & Stempel' : 'Tambah Akun Pengguna Baru'}
-        subtitle="Atur hak akses, kredensial, tanda tangan digital, serta stempel sekolah milik akun"
+        title={editingId ? 'Edit Akun, Kredensial & TTD' : 'Tambah Akun Pengguna Baru'}
+        subtitle="Isi Username & Password dan/atau Email Google untuk akses masuk, serta TTD & stempel saat cetak"
         maxWidthClass="max-w-4xl"
         onClose={() => {
           setFormModalOpen(false);
@@ -697,7 +825,7 @@ export function AccountsView({
                 onChange={(e) => handleLinkFromTeacher(e.target.value)}
                 className="flex-1 px-3 py-1.5 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
-                <option value="">-- Pilih Guru untuk mengisi Nama, NIP & Email --</option>
+                <option value="">-- Pilih Guru untuk mengisi Nama, NIP, Username & Email --</option>
                 {teachers.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.name} ({t.position})
@@ -707,7 +835,7 @@ export function AccountsView({
             </div>
           )}
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label htmlFor="acc-name" className="block text-xs font-semibold text-slate-700 mb-1.5">
                 Nama Pengguna <span className="text-rose-600">*</span>
@@ -724,39 +852,90 @@ export function AccountsView({
 
             <div>
               <label htmlFor="acc-email" className="block text-xs font-semibold text-slate-700 mb-1.5">
-                Email Login <span className="text-rose-600">*</span>
+                Email Google Login <span className="text-slate-400 font-normal">(Opsional jika pakai Username)</span>
               </label>
               <input
                 id="acc-email"
                 type="email"
                 value={email}
+                disabled={isSelfLimitedEdit}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="email@sekolah.sch.id"
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600"
+                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600 disabled:bg-slate-100 disabled:text-slate-500"
               />
             </div>
+          </div>
 
-            <div>
-              <label htmlFor="acc-pass" className="block text-xs font-semibold text-slate-700 mb-1.5">
-                Password <span className="text-rose-600">*</span>
-              </label>
-              <div className="relative">
-                <input
-                  id="acc-pass"
-                  type={showPass ? 'text' : 'password'}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Minimal 6 karakter"
-                  className="w-full pl-3 pr-9 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPass((p) => !p)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
-                  aria-label="Toggle password"
-                >
-                  {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
+          {/* Kredensial Login Username & Password */}
+          <div className="rounded-xl border border-indigo-200/80 bg-indigo-50/40 p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <KeyRound className="w-4 h-4 text-indigo-600 shrink-0" />
+                <span className="text-xs font-bold text-slate-800">
+                  Kredensial Login Username & Password
+                </span>
+              </div>
+              {editingAccount?.hasPassword && (
+                <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
+                  Password Sudah Terpasang
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="acc-username" className="block text-xs font-semibold text-slate-700 mb-1.5">
+                  Username Login
+                </label>
+                <div className="relative">
+                  <User className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    id="acc-username"
+                    type="text"
+                    autoComplete="off"
+                    value={username}
+                    disabled={isSelfLimitedEdit}
+                    onChange={(e) => setUsername(e.target.value)}
+                    placeholder="contoh: budi.santoso"
+                    className="w-full pl-8 pr-3 py-2 text-sm font-mono-tabular bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600 disabled:bg-slate-100 disabled:text-slate-500"
+                  />
+                </div>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  3–40 karakter huruf kecil, angka, titik (.), garis bawah (_), atau (-).
+                </p>
+              </div>
+
+              <div>
+                <label htmlFor="acc-password" className="block text-xs font-semibold text-slate-700 mb-1.5">
+                  {editingAccount?.hasPassword ? 'Password Baru (Opsional)' : 'Password Login'}
+                </label>
+                <div className="relative">
+                  <Lock className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    id="acc-password"
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete="new-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder={
+                      editingAccount?.hasPassword
+                        ? 'Kosongkan jika tidak ingin mengubah password'
+                        : 'Minimal 6 karakter'
+                    }
+                    className="w-full pl-8 pr-9 py-2 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    aria-label={showPassword ? 'Sembunyikan password' : 'Tampilkan password'}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5"
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Password di-hash secara aman di server dan tidak pernah disimpan sebagai teks biasa.
+                </p>
               </div>
             </div>
           </div>
@@ -769,8 +948,9 @@ export function AccountsView({
               <select
                 id="acc-role"
                 value={role}
+                disabled={isSelfLimitedEdit}
                 onChange={(e) => setRole(e.target.value as AccountRole)}
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600 disabled:bg-slate-100 disabled:text-slate-500"
               >
                 {ROLE_OPTIONS.map((r) => (
                   <option key={r} value={r}>
@@ -801,8 +981,9 @@ export function AccountsView({
               <select
                 id="acc-status"
                 value={status}
+                disabled={isSelfLimitedEdit}
                 onChange={(e) => setStatus(e.target.value as 'Aktif' | 'Nonaktif')}
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600 disabled:bg-slate-100 disabled:text-slate-500"
               >
                 <option value="Aktif">Aktif</option>
                 <option value="Nonaktif">Nonaktif</option>
@@ -844,45 +1025,57 @@ export function AccountsView({
               </button>
             </div>
 
-            <div className="border border-slate-200 rounded-xl p-3.5 space-y-2 bg-slate-50/60">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-700">
-                  Stempel Sekolah Akun (Saat Cetak)
-                </span>
-                <div className="flex items-center gap-2">
-                  {settings.defaultSchoolStampImage && (
-                    <button
-                      type="button"
-                      onClick={() => setSchoolStampImage(settings.defaultSchoolStampImage)}
-                      className="text-xs text-indigo-600 hover:underline"
-                    >
-                      Pakai Default
-                    </button>
-                  )}
-                  {schoolStampImage && (
-                    <button
-                      type="button"
-                      onClick={() => setSchoolStampImage('')}
-                      className="text-xs text-rose-600 hover:underline"
-                    >
-                      Hapus
-                    </button>
+            {role === 'Kepala Sekolah' ? (
+              <div className="border border-slate-200 rounded-xl p-3.5 space-y-2 bg-slate-50/60">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-700">
+                    Stempel Sekolah (Kepala Sekolah)
+                  </span>
+                  <div className="flex items-center gap-2">
+                    {settings.defaultSchoolStampImage && (
+                      <button
+                        type="button"
+                        onClick={() => setSchoolStampImage(settings.defaultSchoolStampImage)}
+                        className="text-xs text-indigo-600 hover:underline"
+                      >
+                        Pakai Default
+                      </button>
+                    )}
+                    {schoolStampImage && (
+                      <button
+                        type="button"
+                        onClick={() => setSchoolStampImage('')}
+                        className="text-xs text-rose-600 hover:underline"
+                      >
+                        Hapus
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="h-20 bg-white rounded-lg border border-dashed border-slate-300 flex items-center justify-center p-2 overflow-hidden">
+                  {schoolStampImage ? (
+                    <img src={schoolStampImage} alt="Stempel Akun" className="max-h-full max-w-full object-contain" />
+                  ) : (
+                    <span className="text-xs text-slate-400">Belum ada stempel</span>
                   )}
                 </div>
+                <label className="cursor-pointer w-full px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold inline-flex items-center justify-center gap-1.5">
+                  <Stamp className="w-3.5 h-3.5 text-indigo-600" />
+                  Unggah Stempel Kepala Sekolah
+                  <input type="file" accept="image/*" className="hidden" onChange={handleStampUpload} />
+                </label>
               </div>
-              <div className="h-20 bg-white rounded-lg border border-dashed border-slate-300 flex items-center justify-center p-2 overflow-hidden">
-                {schoolStampImage ? (
-                  <img src={schoolStampImage} alt="Stempel Akun" className="max-h-full max-w-full object-contain" />
-                ) : (
-                  <span className="text-xs text-slate-400">Belum ada stempel</span>
-                )}
+            ) : (
+              <div className="border border-slate-200 rounded-xl p-3.5 flex flex-col items-center justify-center text-center bg-slate-50/60 gap-1.5">
+                <Stamp className="w-5 h-5 text-slate-400" />
+                <p className="text-xs font-semibold text-slate-700">
+                  Stempel Khusus Kepala Sekolah
+                </p>
+                <p className="text-[11px] text-slate-500 max-w-xs">
+                  Stempel sekolah hanya berlaku untuk peran Kepala Sekolah dan diatur pada menu Pengaturan atau akun Kepala Sekolah.
+                </p>
               </div>
-              <label className="cursor-pointer w-full px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold inline-flex items-center justify-center gap-1.5">
-                <Stamp className="w-3.5 h-3.5 text-indigo-600" />
-                Unggah Stempel Khusus Akun
-                <input type="file" accept="image/*" className="hidden" onChange={handleStampUpload} />
-              </label>
-            </div>
+            )}
           </div>
 
           <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
@@ -905,10 +1098,15 @@ export function AccountsView({
             </button>
             <button
               type="submit"
-              className="px-5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold transition-colors inline-flex items-center gap-2"
+              disabled={submitting}
+              className="px-5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-sm font-semibold transition-colors inline-flex items-center gap-2"
             >
               <UserPlus className="w-4 h-4" />
-              {editingId ? 'Simpan Perubahan Akun' : 'Buat Akun'}
+              {submitting
+                ? 'Menyimpan...'
+                : editingId
+                  ? 'Simpan Perubahan Akun'
+                  : 'Buat Akun'}
             </button>
           </div>
         </form>
@@ -917,7 +1115,7 @@ export function AccountsView({
       <FormModal
         open={importModalOpen}
         title="Impor Akun Massal (Excel / CSV / Tempel)"
-        subtitle="Kolom: Nama Pengguna, Email Login, Password, Peran, NIP, Status"
+        subtitle="Kolom: Nama Pengguna, Email Google, Peran, NIP, Status"
         maxWidthClass="max-w-2xl"
         onClose={() => setImportModalOpen(false)}
       >

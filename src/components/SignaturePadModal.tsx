@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Eraser, ImagePlus, PenLine, Check, X } from 'lucide-react';
+import { compressCanvasToDataUrl, compressImageFileToDataUrl } from '../utils/portalHelpers';
 
 interface SignaturePadModalProps {
   open: boolean;
@@ -87,17 +88,14 @@ export function SignaturePadModal({
     setUploadedPreview('');
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setUploadedPreview(reader.result);
-        setHasStroke(false);
-      }
-    };
-    reader.readAsDataURL(file);
+    const compressed = await compressImageFileToDataUrl(file, 420, 200000);
+    if (compressed) {
+      setUploadedPreview(compressed);
+      setHasStroke(false);
+    }
   };
 
   const handleConfirmSave = () => {
@@ -107,7 +105,7 @@ export function SignaturePadModal({
       return;
     }
     if (hasStroke && canvasRef.current) {
-      onSave(canvasRef.current.toDataURL('image/png'));
+      onSave(compressCanvasToDataUrl(canvasRef.current, 190000));
       onClose();
       return;
     }

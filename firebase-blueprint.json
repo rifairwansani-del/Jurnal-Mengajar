@@ -1,0 +1,224 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated user identity and role metadata stored per Firebase Auth UID.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["Admin", "Guru Mapel", "Wali Kelas", "Guru BK", "Kepala Sekolah", "Pending"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "lastLoginAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "displayName", "role", "createdAt", "lastLoginAt"]
+    },
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "Authorized school staff account (keyed by lowercase email) including role, NIP, status, signature, and school stamp.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "username": { "type": "string" },
+        "hasPassword": { "type": "boolean" },
+        "role": { "type": "string", "enum": ["Admin", "Guru Mapel", "Wali Kelas", "Guru BK", "Kepala Sekolah"] },
+        "nip": { "type": "string" },
+        "status": { "type": "string", "enum": ["Aktif", "Nonaktif"] },
+        "lastLogin": { "type": "string" },
+        "signatureImage": { "type": "string" },
+        "schoolStampImage": { "type": "string" }
+      },
+      "required": ["id", "name", "email", "role", "nip", "status", "lastLogin", "signatureImage", "schoolStampImage"]
+    },
+    "Student": {
+      "title": "Student",
+      "description": "Student master record and biodata.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "nis": { "type": "string" },
+        "nisn": { "type": "string" },
+        "name": { "type": "string" },
+        "className": { "type": "string" },
+        "absentNo": { "type": "string" },
+        "birthPlace": { "type": "string" },
+        "birthDate": { "type": "string" },
+        "email": { "type": "string" },
+        "photo": { "type": "string" },
+        "address": { "type": "string" },
+        "phone": { "type": "string" },
+        "gender": { "type": "string", "enum": ["L", "P"] },
+        "status": { "type": "string", "enum": ["Aktif", "Pindah", "Lulus", "Nonaktif"] },
+        "homeroomTeacher": { "type": "string" },
+        "counselorTeacher": { "type": "string" },
+        "entryYear": { "type": "string" }
+      },
+      "required": ["id", "nis", "nisn", "name", "className", "absentNo", "birthPlace", "birthDate", "email", "photo", "address", "phone", "gender", "status", "homeroomTeacher", "counselorTeacher", "entryYear"]
+    },
+    "Teacher": {
+      "title": "Teacher",
+      "description": "Teacher master record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "nip": { "type": "string" },
+        "name": { "type": "string" },
+        "position": { "type": "string" },
+        "subject": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "gender": { "type": "string", "enum": ["L", "P"] },
+        "employmentStatus": { "type": "string", "enum": ["PNS", "PPPK", "Tetap Yayasan", "Honorer"] },
+        "status": { "type": "string", "enum": ["Aktif", "Cuti", "Nonaktif"] },
+        "address": { "type": "string" },
+        "photo": { "type": "string" }
+      },
+      "required": ["id", "nip", "name", "position", "subject", "email", "phone", "gender", "employmentStatus", "status", "address", "photo"]
+    },
+    "TeachingSchedule": {
+      "title": "TeachingSchedule",
+      "description": "Weekly teaching schedule entry.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "day": { "type": "string", "enum": ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"] },
+        "jamKe": { "type": "string" },
+        "timeRange": { "type": "string" },
+        "className": { "type": "string" },
+        "subject": { "type": "string" },
+        "teacherName": { "type": "string" },
+        "room": { "type": "string" },
+        "academicYear": { "type": "string" },
+        "semester": { "type": "string", "enum": ["Ganjil", "Genap"] },
+        "notes": { "type": "string" }
+      },
+      "required": ["id", "day", "jamKe", "timeRange", "className", "subject", "teacherName", "room", "academicYear", "semester", "notes"]
+    },
+    "JournalEntry": {
+      "title": "JournalEntry",
+      "description": "Teaching journal session with per-student attendance map.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "jamKe": { "type": "string" },
+        "className": { "type": "string" },
+        "subject": { "type": "string" },
+        "topic": { "type": "string" },
+        "activity": { "type": "string" },
+        "academicYear": { "type": "string" },
+        "semester": { "type": "string", "enum": ["Ganjil", "Genap"] },
+        "attendance": { "type": "object" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "date", "jamKe", "className", "subject", "topic", "activity", "academicYear", "semester", "attendance", "createdAt"]
+    },
+    "GradeEntry": {
+      "title": "GradeEntry",
+      "description": "Student exam grade record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "className": { "type": "string" },
+        "subject": { "type": "string" },
+        "examType": { "type": "string" },
+        "studentId": { "type": "string" },
+        "score": { "type": "number" },
+        "note": { "type": "string" },
+        "marker": { "type": "string", "enum": ["neutral", "green", "yellow", "red", "blue"] },
+        "academicYear": { "type": "string" },
+        "semester": { "type": "string", "enum": ["Ganjil", "Genap"] },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "className", "subject", "examType", "studentId", "note", "marker", "academicYear", "semester", "updatedAt"]
+    },
+    "SystemSettings": {
+      "title": "SystemSettings",
+      "description": "Global school configuration, kop surat, signature positioning, report print preferences, and master lists.",
+      "type": "object",
+      "properties": {
+        "academicYear": { "type": "string" },
+        "semester": { "type": "string", "enum": ["Ganjil", "Genap"] },
+        "signatureLocation": { "type": "string" },
+        "principalTitle": { "type": "string" },
+        "principalName": { "type": "string" },
+        "principalNip": { "type": "string" },
+        "principalSignatureImage": { "type": "string" },
+        "defaultSchoolStampImage": { "type": "string" },
+        "teacherName": { "type": "string" },
+        "teacherNip": { "type": "string" },
+        "schoolName": { "type": "string" },
+        "email": { "type": "string" },
+        "themeId": { "type": "string", "enum": ["slate-indigo", "royal-blue", "emerald-forest", "crimson-charcoal", "midnight-dark"] },
+        "identity": { "type": "object" },
+        "signaturePosition": { "type": "object" },
+        "reportPrintPreferences": { "type": "object" },
+        "kopSurat": { "type": "object" },
+        "masterClasses": { "type": "array", "items": { "type": "string" } },
+        "masterSubjects": { "type": "array", "items": { "type": "string" } },
+        "masterExamTypes": { "type": "array", "items": { "type": "string" } },
+        "masterAcademicYears": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": [
+        "academicYear",
+        "semester",
+        "signatureLocation",
+        "principalTitle",
+        "principalName",
+        "principalNip",
+        "principalSignatureImage",
+        "defaultSchoolStampImage",
+        "teacherName",
+        "teacherNip",
+        "schoolName",
+        "email",
+        "themeId",
+        "identity",
+        "signaturePosition",
+        "reportPrintPreferences",
+        "kopSurat",
+        "masterClasses",
+        "masterSubjects",
+        "masterExamTypes",
+        "masterAcademicYears"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User login profile keyed by Firebase Auth UID."
+    },
+    "/accounts/{accountId}": {
+      "schema": { "$ref": "#/entities/UserAccount" },
+      "description": "Staff whitelist & signer profiles keyed by lowercase email."
+    },
+    "/students/{studentId}": {
+      "schema": { "$ref": "#/entities/Student" },
+      "description": "Student master directory."
+    },
+    "/teachers/{teacherId}": {
+      "schema": { "$ref": "#/entities/Teacher" },
+      "description": "Teacher master directory."
+    },
+    "/schedules/{scheduleId}": {
+      "schema": { "$ref": "#/entities/TeachingSchedule" },
+      "description": "Teaching schedule records."
+    },
+    "/journals/{journalId}": {
+      "schema": { "$ref": "#/entities/JournalEntry" },
+      "description": "Teaching journals and student attendance maps."
+    },
+    "/grades/{gradeId}": {
+      "schema": { "$ref": "#/entities/GradeEntry" },
+      "description": "Exam scores and remedial markers."
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/SystemSettings" },
+      "description": "Global portal settings stored under document ID 'global'."
+    }
+  }
+}

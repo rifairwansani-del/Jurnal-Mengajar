@@ -19,7 +19,11 @@ import {
 } from 'lucide-react';
 import { PortalDatabase, SemesterType, Student, SystemSettings, ThemeId } from '../types';
 import { exportRowsToXlsx } from '../utils/exportHelpers';
-import { formatShortDateId, getTodayISO } from '../utils/portalHelpers';
+import {
+  compressImageFileToDataUrl,
+  formatShortDateId,
+  getTodayISO,
+} from '../utils/portalHelpers';
 import { PORTAL_THEMES } from '../utils/themeConfig';
 import { ConfirmDialogState } from './FeedbackUI';
 import { SignaturePadModal } from './SignaturePadModal';
@@ -530,7 +534,6 @@ export function SettingsView({
   const [teacherNip, setTeacherNip] = useState(settings.teacherNip);
   const [schoolName, setSchoolName] = useState(settings.schoolName);
   const [email, setEmail] = useState(settings.email);
-  const [password, setPassword] = useState(settings.password);
 
   // Interactive Detail Modals for Master Kelas, Master Mapel & Detail Siswa
   const [detailClass, setDetailClass] = useState<string | null>(null);
@@ -584,34 +587,26 @@ export function SettingsView({
     onToast('success', `Tema tampilan diubah ke "${PORTAL_THEMES[nextTheme].name}".`);
   };
 
-  const handleSidebarLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleSidebarLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 2 * 1024 * 1024) {
       onToast('error', 'Ukuran logo maksimal 2 MB.');
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = typeof reader.result === 'string' ? reader.result : '';
-      setIdentity((prev) => ({ ...prev, sidebarLogo: result }));
-    };
-    reader.readAsDataURL(file);
+    const result = await compressImageFileToDataUrl(file, 360, 180000);
+    setIdentity((prev) => ({ ...prev, sidebarLogo: result }));
   };
 
-  const handleStampUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleStampUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 2 * 1024 * 1024) {
       onToast('error', 'Ukuran stempel maksimal 2 MB.');
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = typeof reader.result === 'string' ? reader.result : '';
-      setDefaultSchoolStampImage(result);
-    };
-    reader.readAsDataURL(file);
+    const result = await compressImageFileToDataUrl(file, 360, 180000);
+    setDefaultSchoolStampImage(result);
   };
 
   const handleSavePeriodAndOfficials = (e: React.FormEvent) => {
@@ -639,7 +634,7 @@ export function SettingsView({
     onToast('success', 'Pengaturan Kop Surat Dinas berhasil disimpan.');
   };
 
-  const handleLogoUpload = (
+  const handleLogoUpload = async (
     side: 'logoLeft' | 'logoRight',
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
@@ -649,18 +644,14 @@ export function SettingsView({
       onToast('error', 'Ukuran file logo maksimal 2 MB.');
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = typeof reader.result === 'string' ? reader.result : '';
-      setKop((prev) => ({ ...prev, [side]: result }));
-    };
-    reader.readAsDataURL(file);
+    const result = await compressImageFileToDataUrl(file, 360, 180000);
+    setKop((prev) => ({ ...prev, [side]: result }));
   };
 
   const handleSaveProfileAccount = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!teacherName.trim() || !email.trim() || !password.trim()) {
-      onToast('error', 'Nama Guru, Email, dan Password wajib diisi.');
+    if (!teacherName.trim() || !email.trim()) {
+      onToast('error', 'Nama Guru dan Email wajib diisi.');
       return;
     }
     onUpdateSettings((prev) => ({
@@ -669,9 +660,8 @@ export function SettingsView({
       teacherNip: teacherNip.trim(),
       schoolName: schoolName.trim(),
       email: email.trim(),
-      password,
     }));
-    onToast('success', 'Profil guru & akun login lokal berhasil diperbarui.');
+    onToast('success', 'Profil guru & identitas sekolah berhasil diperbarui.');
   };
 
   // Master Data Handlers
@@ -780,13 +770,16 @@ export function SettingsView({
       setDefaultSchoolStampImage(parsed.settings.defaultSchoolStampImage || '');
       if (parsed.settings.themeId) setThemeId(parsed.settings.themeId);
       if (parsed.settings.identity) setIdentity(parsed.settings.identity);
-      setKop(parsed.settings.kopSurat);
+      setKop({
+        ...parsed.settings.kopSurat,
+        logoLeftSize: parsed.settings.kopSurat.logoLeftSize ?? 72,
+        logoRightSize: parsed.settings.kopSurat.logoRightSize ?? 72,
+      });
       setTeacherName(parsed.settings.teacherName);
       setTeacherNip(parsed.settings.teacherNip);
       setSchoolName(parsed.settings.schoolName);
       setEmail(parsed.settings.email);
-      setPassword(parsed.settings.password);
-      onToast('success', 'Seluruh data berhasil dipulihkan dari file backup JSON.');
+      onToast('success', 'Seluruh data berhasil dipulihkan ke Cloud Firestore.');
     } catch {
       onToast('error', 'Gagal membaca file JSON backup.');
     } finally {
@@ -796,14 +789,14 @@ export function SettingsView({
 
   const handleResetLocal = () => {
     onConfirm({
-      title: 'Reset Seluruh Data Lokal',
+      title: 'Reset Seluruh Data Sekolah',
       description:
-        'Tindakan ini akan menghapus seluruh data siswa, jurnal mengajar, nilai, dan pengaturan yang tersimpan di browser Anda dan mengembalikan ke sesi awal.',
+        'Tindakan ini akan menghapus seluruh data siswa, guru, jadwal, jurnal mengajar, dan nilai dari Cloud Firestore lalu mengembalikan pengaturan standar.',
       confirmLabel: 'Ya, Reset Semua Data',
       danger: true,
       onConfirm: () => {
         onResetAllData();
-        onToast('info', 'Seluruh data lokal telah direset.');
+        onToast('info', 'Seluruh data operasional di Cloud Firestore telah direset.');
       },
     });
   };
@@ -1206,12 +1199,12 @@ export function SettingsView({
           </form>
         </section>
 
-        {/* Profil Guru Mapel & Akun Login */}
+        {/* Profil Guru Mapel & Identitas Sekolah */}
         <section className="bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col">
           <div className="px-5 py-4 border-b border-slate-200">
-            <h2 className="text-base font-bold text-slate-900">Profil Guru Mapel & Akun Login</h2>
+            <h2 className="text-base font-bold text-slate-900">Profil Guru Mapel & Identitas Sekolah</h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Identitas pengajar dan kredensial masuk lokal perangkat
+              Identitas pengajar utama dan informasi satuan pendidikan untuk dokumen laporan
             </p>
           </div>
           <form onSubmit={handleSaveProfileAccount} className="p-5 space-y-4 flex-1 flex flex-col justify-between">
@@ -1256,31 +1249,17 @@ export function SettingsView({
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label htmlFor="prof-email" className="block text-xs font-semibold text-slate-700 mb-1.5">
-                    Email Login
-                  </label>
-                  <input
-                    id="prof-email"
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600"
-                  />
-                </div>
-                <div>
-                  <label htmlFor="prof-pass" className="block text-xs font-semibold text-slate-700 mb-1.5">
-                    Password Login
-                  </label>
-                  <input
-                    id="prof-pass"
-                    type="text"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600"
-                  />
-                </div>
+              <div>
+                <label htmlFor="prof-email" className="block text-xs font-semibold text-slate-700 mb-1.5">
+                  Email Google Pengelola Utama
+                </label>
+                <input
+                  id="prof-email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600"
+                />
               </div>
             </div>
 
@@ -1334,7 +1313,7 @@ export function SettingsView({
             <div className="lg:col-span-5 space-y-4">
               {/* Upload Logo Kiri & Kanan */}
               <div className="grid grid-cols-2 gap-3">
-                <div className="border border-slate-200 rounded-xl p-3 text-center space-y-2">
+                <div className="border border-slate-200 rounded-xl p-3 text-center space-y-2.5">
                   <p className="text-xs font-semibold text-slate-700">Logo Kiri</p>
                   <div className="h-24 bg-slate-50 rounded-lg border border-dashed border-slate-300 flex items-center justify-center overflow-hidden p-2">
                     {kop.logoLeft ? (
@@ -1364,9 +1343,56 @@ export function SettingsView({
                       </button>
                     )}
                   </div>
+                  <div className="pt-2 border-t border-slate-100 text-left space-y-1">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-semibold text-slate-600">Ukuran Logo Kiri</span>
+                      <span className="font-mono-tabular font-semibold text-indigo-700">
+                        {kop.logoLeftSize ?? 72}px
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setKop((prev) => ({
+                            ...prev,
+                            logoLeftSize: Math.max(28, (prev.logoLeftSize ?? 72) - 4),
+                          }))
+                        }
+                        aria-label="Perkecil Logo Kiri"
+                        className="w-6 h-6 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-bold text-slate-700 shrink-0"
+                      >
+                        -
+                      </button>
+                      <input
+                        type="range"
+                        min={28}
+                        max={150}
+                        value={kop.logoLeftSize ?? 72}
+                        onChange={(e) =>
+                          setKop((prev) => ({ ...prev, logoLeftSize: Number(e.target.value) }))
+                        }
+                        aria-label="Slider ukuran Logo Kiri"
+                        className="flex-1 min-w-0 accent-indigo-600"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setKop((prev) => ({
+                            ...prev,
+                            logoLeftSize: Math.min(150, (prev.logoLeftSize ?? 72) + 4),
+                          }))
+                        }
+                        aria-label="Perbesar Logo Kiri"
+                        className="w-6 h-6 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-bold text-slate-700 shrink-0"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
-                <div className="border border-slate-200 rounded-xl p-3 text-center space-y-2">
+                <div className="border border-slate-200 rounded-xl p-3 text-center space-y-2.5">
                   <p className="text-xs font-semibold text-slate-700">Logo Kanan</p>
                   <div className="h-24 bg-slate-50 rounded-lg border border-dashed border-slate-300 flex items-center justify-center overflow-hidden p-2">
                     {kop.logoRight ? (
@@ -1396,13 +1422,69 @@ export function SettingsView({
                       </button>
                     )}
                   </div>
+                  <div className="pt-2 border-t border-slate-100 text-left space-y-1">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-semibold text-slate-600">Ukuran Logo Kanan</span>
+                      <span className="font-mono-tabular font-semibold text-indigo-700">
+                        {kop.logoRightSize ?? 72}px
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setKop((prev) => ({
+                            ...prev,
+                            logoRightSize: Math.max(28, (prev.logoRightSize ?? 72) - 4),
+                          }))
+                        }
+                        aria-label="Perkecil Logo Kanan"
+                        className="w-6 h-6 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-bold text-slate-700 shrink-0"
+                      >
+                        -
+                      </button>
+                      <input
+                        type="range"
+                        min={28}
+                        max={150}
+                        value={kop.logoRightSize ?? 72}
+                        onChange={(e) =>
+                          setKop((prev) => ({ ...prev, logoRightSize: Number(e.target.value) }))
+                        }
+                        aria-label="Slider ukuran Logo Kanan"
+                        className="flex-1 min-w-0 accent-indigo-600"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setKop((prev) => ({
+                            ...prev,
+                            logoRightSize: Math.min(150, (prev.logoRightSize ?? 72) + 4),
+                          }))
+                        }
+                        aria-label="Perbesar Logo Kanan"
+                        className="w-6 h-6 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-bold text-slate-700 shrink-0"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              <div className="pt-2">
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setKop((prev) => ({ ...prev, logoLeftSize: 72, logoRightSize: 72 }))
+                  }
+                  className="px-3 py-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 whitespace-nowrap"
+                >
+                  Reset Ukuran Logo
+                </button>
                 <button
                   type="submit"
-                  className="w-full py-2.5 px-4 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold transition-colors inline-flex items-center justify-center gap-2"
+                  className="flex-1 py-2.5 px-4 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold transition-colors inline-flex items-center justify-center gap-2"
                 >
                   <Save className="w-4 h-4" />
                   Simpan Pengaturan Kop Surat
@@ -1416,11 +1498,25 @@ export function SettingsView({
             <p className="text-xs font-semibold text-slate-500 mb-3">
               Pratinjau Langsung (Live Preview) Kop Surat Resmi
             </p>
-            <div className="bg-white p-5 border border-slate-200 text-black font-serif">
+            <div className="bg-white p-5 border border-slate-200 text-black font-serif overflow-x-auto">
               <div className="pb-3 border-b-4 border-double border-black flex items-center justify-between gap-4">
-                <div className="w-16 h-16 shrink-0 flex items-center justify-center">
+                <div
+                  style={{
+                    width: `${Math.max(64, (kop.logoLeftSize ?? 72) + 8)}px`,
+                    minHeight: `${kop.logoLeftSize ?? 72}px`,
+                  }}
+                  className="shrink-0 flex items-center justify-center"
+                >
                   {kop.logoLeft && (
-                    <img src={kop.logoLeft} alt="Preview Logo Kiri" className="max-w-full max-h-full object-contain" />
+                    <img
+                      src={kop.logoLeft}
+                      alt="Preview Logo Kiri"
+                      style={{
+                        width: `${kop.logoLeftSize ?? 72}px`,
+                        height: `${kop.logoLeftSize ?? 72}px`,
+                      }}
+                      className="object-contain"
+                    />
                   )}
                 </div>
                 <div className="flex-1 text-center leading-tight">
@@ -1431,9 +1527,23 @@ export function SettingsView({
                   {kop.line5 && <p className="text-[11px] sm:text-xs">{kop.line5}</p>}
                   {kop.line6 && <p className="text-[11px] sm:text-xs">{kop.line6}</p>}
                 </div>
-                <div className="w-16 h-16 shrink-0 flex items-center justify-center">
+                <div
+                  style={{
+                    width: `${Math.max(64, (kop.logoRightSize ?? 72) + 8)}px`,
+                    minHeight: `${kop.logoRightSize ?? 72}px`,
+                  }}
+                  className="shrink-0 flex items-center justify-center"
+                >
                   {kop.logoRight && (
-                    <img src={kop.logoRight} alt="Preview Logo Kanan" className="max-w-full max-h-full object-contain" />
+                    <img
+                      src={kop.logoRight}
+                      alt="Preview Logo Kanan"
+                      style={{
+                        width: `${kop.logoRightSize ?? 72}px`,
+                        height: `${kop.logoRightSize ?? 72}px`,
+                      }}
+                      className="object-contain"
+                    />
                   )}
                 </div>
               </div>
@@ -1517,12 +1627,12 @@ export function SettingsView({
         </div>
       </section>
 
-      {/* Utilitas Manajemen Data Lokal */}
+      {/* Utilitas Manajemen Data Cloud */}
       <section className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
         <div>
-          <h2 className="text-base font-bold text-slate-900">Utilitas Manajemen Data Lokal (LocalStorage)</h2>
+          <h2 className="text-base font-bold text-slate-900">Utilitas Manajemen Data (Cloud Backup & Restore)</h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Cadangkan seluruh data ke file JSON sebelum berganti perangkat atau bersihkan penyimpanan lokal browser
+            Cadangkan seluruh data sekolah dari Cloud Firestore ke file JSON atau pulihkan cadangan JSON ke server
           </p>
         </div>
 
@@ -1558,7 +1668,7 @@ export function SettingsView({
             className="px-4 py-2 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs sm:text-sm font-semibold transition-colors inline-flex items-center gap-2 whitespace-nowrap"
           >
             <RotateCcw className="w-4 h-4" />
-            Reset Seluruh Data Lokal
+            Reset Data Sekolah
           </button>
         </div>
       </section>

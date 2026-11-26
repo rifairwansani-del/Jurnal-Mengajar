@@ -174,7 +174,8 @@ export interface UserAccount {
   id: string;
   name: string;
   email: string;
-  password: string;
+  username?: string;
+  hasPassword?: boolean;
   role: AccountRole;
   nip: string;
   status: 'Aktif' | 'Nonaktif';
@@ -203,7 +204,7 @@ export interface JournalEntry {
 }
 
 export interface GradeEntry {
-  id: string; // `${academicYear}__${semester}__${className}__${subject}__${examType}__${studentId}`
+  id: string; // sanitized `${academicYear}__${semester}__${className}__${subject}__${examType}__${studentId}`
   className: string;
   subject: string;
   examType: string;
@@ -225,6 +226,8 @@ export interface KopSuratSettings {
   line6: string;
   logoLeft: string;
   logoRight: string;
+  logoLeftSize?: number;  // px width/height (28-150, default 72)
+  logoRightSize?: number; // px width/height (28-150, default 72)
 }
 
 export interface SystemSettings {
@@ -240,7 +243,6 @@ export interface SystemSettings {
   teacherNip: string;
   schoolName: string;
   email: string;
-  password: string;
   themeId: ThemeId;
   identity: PortalIdentitySettings;
   signaturePosition: SignaturePositionSettings;
@@ -254,7 +256,9 @@ export interface SystemSettings {
 
 export interface SessionState {
   isLoggedIn: boolean;
+  authMethod?: 'google' | 'credentials';
   accountId?: string;
+  username?: string;
   email: string;
   userName?: string;
   userRole?: AccountRole;

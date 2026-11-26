@@ -1,6 +1,6 @@
 {
   "name": "Portal E-Guru v10.2",
-  "description": "Sistem Jurnal Mengajar, Presensi & Penilaian Guru Terpadu berbasis LocalStorage browser.",
+  "description": "Sistem Jurnal Mengajar, Presensi & Penilaian Guru Terpadu berbasis server Express dan database Cloud Firestore.",
   "requestFramePermissions": [],
   "majorCapabilities": []
 }

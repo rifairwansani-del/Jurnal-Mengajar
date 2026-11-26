@@ -170,6 +170,14 @@ export function computeClassSummary(
   });
 }
 
+export function toFirestoreSafeId(raw: string): string {
+  return raw.trim().replace(/\//g, '-');
+}
+
+export function normalizeEmailId(email: string): string {
+  return email.trim().toLowerCase().replace(/\//g, '');
+}
+
 export function makeGradeId(
   academicYear: string,
   semester: string,
@@ -178,7 +186,8 @@ export function makeGradeId(
   examType: string,
   studentId: string
 ): string {
-  return `${academicYear}__${semester}__${className}__${subject}__${examType}__${studentId}`;
+  const safe = (v: string) => toFirestoreSafeId(v);
+  return `${safe(academicYear)}__${safe(semester)}__${safe(className)}__${safe(subject)}__${safe(examType)}__${safe(studentId)}`;
 }
 
 export async function imageUrlToPngDataUrl(src: string): Promise<string | null> {
@@ -210,5 +219,84 @@ export async function imageUrlToPngDataUrl(src: string): Promise<string | null> 
     };
     img.onerror = () => resolve(null);
     img.src = src;
+  });
+}
+
+export function compressCanvasToDataUrl(
+  sourceCanvas: HTMLCanvasElement,
+  maxDataUrlChars = 190000
+): string {
+  let out = sourceCanvas.toDataURL('image/png');
+  if (out.length <= maxDataUrlChars) return out;
+
+  const scales = [1, 0.75, 0.5, 0.35];
+  const qualities = [0.85, 0.7, 0.55, 0.4];
+
+  for (const scale of scales) {
+    const w = Math.max(1, Math.round(sourceCanvas.width * scale));
+    const h = Math.max(1, Math.round(sourceCanvas.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) continue;
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(sourceCanvas, 0, 0, w, h);
+
+    const png = canvas.toDataURL('image/png');
+    if (png.length <= maxDataUrlChars) return png;
+
+    for (const q of qualities) {
+      const webp = canvas.toDataURL('image/webp', q);
+      if (webp.length <= maxDataUrlChars) return webp;
+      const jpeg = canvas.toDataURL('image/jpeg', q);
+      if (jpeg.length <= maxDataUrlChars) return jpeg;
+    }
+  }
+
+  return '';
+}
+
+export async function compressImageFileToDataUrl(
+  file: File,
+  maxDimension = 480,
+  maxDataUrlChars = 190000
+): Promise<string> {
+  const rawDataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => reject(new Error('Gagal membaca file gambar.'));
+    reader.readAsDataURL(file);
+  });
+
+  if (!rawDataUrl) return '';
+  if (rawDataUrl.length <= maxDataUrlChars && !rawDataUrl.startsWith('data:image/svg+xml')) {
+    return rawDataUrl;
+  }
+
+  return new Promise<string>((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const scale = Math.min(1, maxDimension / Math.max(img.width || 1, img.height || 1));
+        const w = Math.max(1, Math.round((img.width || maxDimension) * scale));
+        const h = Math.max(1, Math.round((img.height || maxDimension) * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(rawDataUrl.length <= maxDataUrlChars ? rawDataUrl : '');
+          return;
+        }
+        ctx.clearRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(compressCanvasToDataUrl(canvas, maxDataUrlChars));
+      } catch {
+        resolve(rawDataUrl.length <= maxDataUrlChars ? rawDataUrl : '');
+      }
+    };
+    img.onerror = () => resolve(rawDataUrl.length <= maxDataUrlChars ? rawDataUrl : '');
+    img.src = rawDataUrl;
   });
 }
