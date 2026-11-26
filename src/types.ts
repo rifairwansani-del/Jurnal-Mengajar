@@ -92,15 +92,21 @@ export type SignatureLayoutPreset =
 
 export interface SignaturePositionSettings {
   preset: SignatureLayoutPreset;
-  principalX: number; // 0-80 (% from left)
-  principalY: number; // 0-120 (px top offset)
-  teacherX: number;   // 0-80 (% from left)
-  teacherY: number;   // 0-120 (px top offset)
+  principalX: number; // 0-82 (% from left)
+  principalY: number; // 0-240 (px top offset)
+  teacherX: number;   // 0-82 (% from left)
+  teacherY: number;   // 0-240 (px top offset)
   showStamp: boolean;
   stampTarget: 'guru' | 'kepsek' | 'keduanya';
-  principalSignatureSize: number; // px height for Kepsek signature (28-130)
-  teacherSignatureSize: number;   // px height for Guru signature (28-130)
-  stampSize: number;              // px square size for school stamp (32-130)
+  principalSignatureSize: number; // px height for Kepsek signature (16-260)
+  teacherSignatureSize: number;   // px height for Guru signature (16-260)
+  stampSize: number;              // px square size for school stamp (20-260)
+  principalSigOffsetX: number;    // px free horizontal offset for Kepsek signature image
+  principalSigOffsetY: number;    // px free vertical offset for Kepsek signature image
+  teacherSigOffsetX: number;      // px free horizontal offset for Guru signature image
+  teacherSigOffsetY: number;      // px free vertical offset for Guru signature image
+  stampOffsetX: number;           // px free horizontal offset for school stamp image
+  stampOffsetY: number;           // px free vertical offset for school stamp image
   signatureSize?: number;
 }
 

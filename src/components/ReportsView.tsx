@@ -219,14 +219,34 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [isExportingWord, setIsExportingWord] = useState(false);
 
-  // Dragging state for 'bebas' signature positioning
-  const [dragTarget, setDragTarget] = useState<'kepsek' | 'guru' | null>(null);
-  const dragOriginRef = useRef<{
-    startX: number;
-    startY: number;
-    initX: number;
-    initY: number;
-  } | null>(null);
+  // Interactive drag & resize state for signature blocks, signature images, and stamp
+  type SigInteraction =
+    | {
+        kind: 'block';
+        target: 'kepsek' | 'guru';
+        startClientX: number;
+        startClientY: number;
+        initX: number;
+        initY: number;
+      }
+    | {
+        kind: 'move-kepsek-sig' | 'move-guru-sig' | 'move-stamp';
+        startClientX: number;
+        startClientY: number;
+        initX: number;
+        initY: number;
+      }
+    | {
+        kind: 'resize-kepsek-sig' | 'resize-guru-sig' | 'resize-stamp';
+        startClientX: number;
+        startClientY: number;
+        initSize: number;
+      };
+
+  const [activeInteraction, setActiveInteraction] = useState<SigInteraction | null>(null);
+  const [selectedMedia, setSelectedMedia] = useState<'kepsek-sig' | 'guru-sig' | 'stamp' | null>(
+    null
+  );
 
   const activeSigner = useMemo(
     () => resolveActiveSigner(db, signerAccountId || undefined),
@@ -275,7 +295,13 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
         (savedSig.principalSignatureSize ?? savedSig.signatureSize ?? 60) ||
       (sigPos.teacherSignatureSize ?? savedSig.signatureSize ?? 60) !==
         (savedSig.teacherSignatureSize ?? savedSig.signatureSize ?? 60) ||
-      (sigPos.stampSize ?? 70) !== (savedSig.stampSize ?? 70);
+      (sigPos.stampSize ?? 70) !== (savedSig.stampSize ?? 70) ||
+      (sigPos.principalSigOffsetX ?? 0) !== (savedSig.principalSigOffsetX ?? 0) ||
+      (sigPos.principalSigOffsetY ?? 0) !== (savedSig.principalSigOffsetY ?? 0) ||
+      (sigPos.teacherSigOffsetX ?? 0) !== (savedSig.teacherSigOffsetX ?? 0) ||
+      (sigPos.teacherSigOffsetY ?? 0) !== (savedSig.teacherSigOffsetY ?? 0) ||
+      (sigPos.stampOffsetX ?? 0) !== (savedSig.stampOffsetX ?? 0) ||
+      (sigPos.stampOffsetY ?? 0) !== (savedSig.stampOffsetY ?? 0);
     return prefsChanged || sigChanged;
   }, [
     settings.reportPrintPreferences,
@@ -414,7 +440,6 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     target: 'kepsek' | 'guru',
     e: React.PointerEvent<HTMLDivElement>
   ) => {
-    e.currentTarget.setPointerCapture(e.pointerId);
     const activeCoords =
       sigPos.preset === 'bebas'
         ? {
@@ -429,34 +454,145 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       updateSigPos({ preset: 'bebas', ...activeCoords });
     }
 
-    setDragTarget(target);
-    dragOriginRef.current = {
-      startX: e.clientX,
-      startY: e.clientY,
+    setActiveInteraction({
+      kind: 'block',
+      target,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
       initX: target === 'kepsek' ? activeCoords.principalX : activeCoords.teacherX,
       initY: target === 'kepsek' ? activeCoords.principalY : activeCoords.teacherY,
-    };
+    });
   };
 
-  const handleSigPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!dragTarget || !dragOriginRef.current || !sigCanvasRef.current) return;
-    const rect = sigCanvasRef.current.getBoundingClientRect();
-    const dxPct = ((e.clientX - dragOriginRef.current.startX) / Math.max(rect.width, 1)) * 100;
-    const dyPx = e.clientY - dragOriginRef.current.startY;
-    const nextX = Math.max(0, Math.min(76, Math.round(dragOriginRef.current.initX + dxPct)));
-    const nextY = Math.max(0, Math.min(160, Math.round(dragOriginRef.current.initY + dyPx)));
+  const startMediaInteraction = (
+    kind:
+      | 'move-kepsek-sig'
+      | 'move-guru-sig'
+      | 'move-stamp'
+      | 'resize-kepsek-sig'
+      | 'resize-guru-sig'
+      | 'resize-stamp',
+    mediaKey: 'kepsek-sig' | 'guru-sig' | 'stamp',
+    e: React.PointerEvent<HTMLElement>
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setSelectedMedia(mediaKey);
 
-    if (dragTarget === 'kepsek') {
-      updateSigPos({ preset: 'bebas', principalX: nextX, principalY: nextY });
+    if (kind === 'move-kepsek-sig') {
+      setActiveInteraction({
+        kind,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        initX: sigPos.principalSigOffsetX ?? 0,
+        initY: sigPos.principalSigOffsetY ?? 0,
+      });
+    } else if (kind === 'move-guru-sig') {
+      setActiveInteraction({
+        kind,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        initX: sigPos.teacherSigOffsetX ?? 0,
+        initY: sigPos.teacherSigOffsetY ?? 0,
+      });
+    } else if (kind === 'move-stamp') {
+      setActiveInteraction({
+        kind,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        initX: sigPos.stampOffsetX ?? 0,
+        initY: sigPos.stampOffsetY ?? 0,
+      });
+    } else if (kind === 'resize-kepsek-sig') {
+      setActiveInteraction({
+        kind,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        initSize: sigPos.principalSignatureSize ?? sigPos.signatureSize ?? 60,
+      });
+    } else if (kind === 'resize-guru-sig') {
+      setActiveInteraction({
+        kind,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        initSize: sigPos.teacherSignatureSize ?? sigPos.signatureSize ?? 60,
+      });
     } else {
-      updateSigPos({ preset: 'bebas', teacherX: nextX, teacherY: nextY });
+      setActiveInteraction({
+        kind: 'resize-stamp',
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        initSize: sigPos.stampSize ?? 70,
+      });
     }
   };
 
-  const handleSigPointerUp = () => {
-    setDragTarget(null);
-    dragOriginRef.current = null;
-  };
+  useEffect(() => {
+    if (!activeInteraction) return;
+
+    const handleWindowPointerMove = (e: PointerEvent) => {
+      const dx = e.clientX - activeInteraction.startClientX;
+      const dy = e.clientY - activeInteraction.startClientY;
+
+      if (activeInteraction.kind === 'block') {
+        const canvasWidth = sigCanvasRef.current?.getBoundingClientRect().width || 800;
+        const dxPct = (dx / Math.max(canvasWidth, 1)) * 100;
+        const nextX = Math.max(0, Math.min(82, Math.round(activeInteraction.initX + dxPct)));
+        const nextY = Math.max(0, Math.min(240, Math.round(activeInteraction.initY + dy)));
+        if (activeInteraction.target === 'kepsek') {
+          updateSigPos({ preset: 'bebas', principalX: nextX, principalY: nextY });
+        } else {
+          updateSigPos({ preset: 'bebas', teacherX: nextX, teacherY: nextY });
+        }
+      } else if (activeInteraction.kind === 'move-kepsek-sig') {
+        updateSigPos({
+          principalSigOffsetX: Math.max(-450, Math.min(450, Math.round(activeInteraction.initX + dx))),
+          principalSigOffsetY: Math.max(-160, Math.min(200, Math.round(activeInteraction.initY + dy))),
+        });
+      } else if (activeInteraction.kind === 'move-guru-sig') {
+        updateSigPos({
+          teacherSigOffsetX: Math.max(-450, Math.min(450, Math.round(activeInteraction.initX + dx))),
+          teacherSigOffsetY: Math.max(-160, Math.min(200, Math.round(activeInteraction.initY + dy))),
+        });
+      } else if (activeInteraction.kind === 'move-stamp') {
+        updateSigPos({
+          stampOffsetX: Math.max(-550, Math.min(550, Math.round(activeInteraction.initX + dx))),
+          stampOffsetY: Math.max(-200, Math.min(200, Math.round(activeInteraction.initY + dy))),
+        });
+      } else if (activeInteraction.kind === 'resize-kepsek-sig') {
+        const nextSize = Math.max(
+          16,
+          Math.min(260, Math.round(activeInteraction.initSize + dx * 0.45 + dy * 0.85))
+        );
+        updateSigPos({ principalSignatureSize: nextSize });
+      } else if (activeInteraction.kind === 'resize-guru-sig') {
+        const nextSize = Math.max(
+          16,
+          Math.min(260, Math.round(activeInteraction.initSize + dx * 0.45 + dy * 0.85))
+        );
+        updateSigPos({ teacherSignatureSize: nextSize });
+      } else if (activeInteraction.kind === 'resize-stamp') {
+        const nextSize = Math.max(
+          20,
+          Math.min(260, Math.round(activeInteraction.initSize + (dx + dy) * 0.65))
+        );
+        updateSigPos({ stampSize: nextSize });
+      }
+    };
+
+    const handleWindowPointerUp = () => {
+      setActiveInteraction(null);
+    };
+
+    window.addEventListener('pointermove', handleWindowPointerMove);
+    window.addEventListener('pointerup', handleWindowPointerUp);
+    window.addEventListener('pointercancel', handleWindowPointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handleWindowPointerMove);
+      window.removeEventListener('pointerup', handleWindowPointerUp);
+      window.removeEventListener('pointercancel', handleWindowPointerUp);
+    };
+  }, [activeInteraction]);
 
   const applyDatePreset = (preset: 'thisMonth' | 'lastMonth' | 'reset') => {
     if (preset === 'reset') {
@@ -1891,15 +2027,21 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       // Signature Block matching Preview & sigPos 1:1
       if (showTtdKepsek || showTtdGuru) {
         const kepsekSigPx = Math.max(
-          24,
-          Math.min(160, sigPos.principalSignatureSize ?? sigPos.signatureSize ?? 60)
+          16,
+          Math.min(260, sigPos.principalSignatureSize ?? sigPos.signatureSize ?? 60)
         );
         const guruSigPx = Math.max(
-          24,
-          Math.min(160, sigPos.teacherSignatureSize ?? sigPos.signatureSize ?? 60)
+          16,
+          Math.min(260, sigPos.teacherSignatureSize ?? sigPos.signatureSize ?? 60)
         );
-        const stampPx = Math.max(28, Math.min(160, sigPos.stampSize ?? 70));
+        const stampPx = Math.max(20, Math.min(260, sigPos.stampSize ?? 70));
         const stampMm = Number((stampPx * 0.285).toFixed(2));
+        const kepsekSigOffsetX = sigPos.principalSigOffsetX ?? 0;
+        const kepsekSigOffsetY = sigPos.principalSigOffsetY ?? 0;
+        const guruSigOffsetX = sigPos.teacherSigOffsetX ?? 0;
+        const guruSigOffsetY = sigPos.teacherSigOffsetY ?? 0;
+        const stampOffsetX = sigPos.stampOffsetX ?? 0;
+        const stampOffsetY = sigPos.stampOffsetY ?? 0;
 
         const neededH =
           sigPos.preset === 'kiri' || sigPos.preset === 'kanan'
@@ -1924,7 +2066,9 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           personNip: string,
           sigPng: string | null,
           withStamp: boolean,
-          sigPx: number
+          sigPx: number,
+          sigOffsetX: number,
+          sigOffsetY: number
         ) => {
           const sigH = Number((sigPx * 0.265).toFixed(2));
           const sigW = Number((sigH * 2.38).toFixed(2));
@@ -1933,10 +2077,26 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           doc.text(topLabel, xMm, yMm);
           doc.text(roleTitle, xMm, yMm + 4.5);
           if (withStamp && stampPng) {
-            doc.addImage(stampPng, 'PNG', xMm + 4.5 - stampMm / 2, yMm + 16 - stampMm / 2, stampMm, stampMm);
+            const stampCenterX = xMm + 4.5 + stampOffsetX * 0.265;
+            const stampCenterY = yMm + 16 + stampOffsetY * 0.265;
+            doc.addImage(
+              stampPng,
+              'PNG',
+              stampCenterX - stampMm / 2,
+              stampCenterY - stampMm / 2,
+              stampMm,
+              stampMm
+            );
           }
           if (sigPng) {
-            doc.addImage(sigPng, 'PNG', xMm, yMm + 14.5 - sigH / 2, sigW, sigH);
+            doc.addImage(
+              sigPng,
+              'PNG',
+              xMm + sigOffsetX * 0.265,
+              yMm + 14.5 - sigH / 2 + sigOffsetY * 0.265,
+              sigW,
+              sigH
+            );
           }
           doc.setFont(pdfFont, 'bold');
           doc.text(personName, xMm, yMm + 25.5);
@@ -1987,7 +2147,9 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             settings.principalNip,
             kepsekSigPng,
             stampOnKepsek,
-            kepsekSigPx
+            kepsekSigPx,
+            kepsekSigOffsetX,
+            kepsekSigOffsetY
           );
         }
 
@@ -2001,7 +2163,9 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             activeSigner.nip,
             guruSigPng,
             stampOnGuru,
-            guruSigPx
+            guruSigPx,
+            guruSigOffsetX,
+            guruSigOffsetY
           );
         }
       }
@@ -2039,79 +2203,198 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     sigPos.showStamp && (sigPos.stampTarget === 'guru' || sigPos.stampTarget === 'keduanya');
 
   const kepsekSigSizePx = Math.max(
-    24,
-    Math.min(160, sigPos.principalSignatureSize ?? sigPos.signatureSize ?? 60)
+    16,
+    Math.min(260, sigPos.principalSignatureSize ?? sigPos.signatureSize ?? 60)
   );
   const guruSigSizePx = Math.max(
-    24,
-    Math.min(160, sigPos.teacherSignatureSize ?? sigPos.signatureSize ?? 60)
+    16,
+    Math.min(260, sigPos.teacherSignatureSize ?? sigPos.signatureSize ?? 60)
   );
-  const stampSizePx = Math.max(28, Math.min(160, sigPos.stampSize ?? 70));
+  const stampSizePx = Math.max(20, Math.min(260, sigPos.stampSize ?? 70));
+  const kepsekSigOffsetX = sigPos.principalSigOffsetX ?? 0;
+  const kepsekSigOffsetY = sigPos.principalSigOffsetY ?? 0;
+  const guruSigOffsetX = sigPos.teacherSigOffsetX ?? 0;
+  const guruSigOffsetY = sigPos.teacherSigOffsetY ?? 0;
+  const stampOffsetX = sigPos.stampOffsetX ?? 0;
+  const stampOffsetY = sigPos.stampOffsetY ?? 0;
 
   const renderSigCard = (
+    sigTarget: 'kepsek' | 'guru',
     topLabel: string,
     roleTitle: string,
     personName: string,
     personNip: string,
     sigImage: string,
     withStamp: boolean,
-    sigPx: number
-  ) => (
-    <div style={{ fontSize: '11.5px', lineHeight: 1.4, textAlign: sigPos.preset === 'tengah' ? 'center' : 'left' }}>
-      <p style={{ margin: 0 }}>{topLabel}</p>
-      <p style={{ margin: 0 }}>{roleTitle}</p>
+    sigPx: number,
+    sigOffsetX: number,
+    sigOffsetY: number
+  ) => {
+    const mediaKey: 'kepsek-sig' | 'guru-sig' =
+      sigTarget === 'kepsek' ? 'kepsek-sig' : 'guru-sig';
+    const isSigSelected = selectedMedia === mediaKey;
+    const isStampSelected = selectedMedia === 'stamp';
+    const stampLeftCss =
+      sigPos.preset === 'tengah'
+        ? `calc(50% - ${23 + Math.round(stampSizePx / 2) - stampOffsetX}px)`
+        : `${19 - Math.round(stampSizePx / 2) + stampOffsetX}px`;
+    const stampTopPx = Math.round((72 - stampSizePx) / 2) + stampOffsetY;
+
+    return (
       <div
         style={{
-          position: 'relative',
-          height: '72px',
-          margin: '4px 0',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: sigPos.preset === 'tengah' ? 'center' : 'flex-start',
-          overflow: 'visible',
+          fontSize: '11.5px',
+          lineHeight: 1.4,
+          textAlign: sigPos.preset === 'tengah' ? 'center' : 'left',
         }}
       >
-        {withStamp && activeSigner.schoolStampImage && (
-          <img
-            src={activeSigner.schoolStampImage}
-            alt="Stempel Sekolah"
-            style={{
-              position: 'absolute',
-              left:
-                sigPos.preset === 'tengah'
-                  ? `calc(50% - ${23 + Math.round(stampSizePx / 2)}px)`
-                  : `${19 - Math.round(stampSizePx / 2)}px`,
-              top: `${Math.round((72 - stampSizePx) / 2)}px`,
-              width: `${stampSizePx}px`,
-              height: `${stampSizePx}px`,
-              objectFit: 'contain',
-              opacity: 0.85,
-              mixBlendMode: 'multiply',
-              pointerEvents: 'none',
-            }}
-          />
-        )}
-        {sigImage && (
-          <img
-            src={sigImage}
-            alt={`TTD ${personName}`}
-            style={{
-              position: 'relative',
-              zIndex: 2,
-              height: `${sigPx}px`,
-              maxWidth: `${Math.round(sigPx * 2.85)}px`,
-              objectFit: 'contain',
-              pointerEvents: 'none',
-            }}
-          />
-        )}
+        <p style={{ margin: 0 }}>{topLabel}</p>
+        <p style={{ margin: 0 }}>{roleTitle}</p>
+        <div
+          style={{
+            position: 'relative',
+            height: '72px',
+            margin: '4px 0',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: sigPos.preset === 'tengah' ? 'center' : 'flex-start',
+            overflow: 'visible',
+          }}
+        >
+          {withStamp && activeSigner.schoolStampImage && (
+            <>
+              <img
+                src={activeSigner.schoolStampImage}
+                alt="Stempel Sekolah"
+                draggable={false}
+                style={{
+                  position: 'absolute',
+                  left: stampLeftCss,
+                  top: `${stampTopPx}px`,
+                  width: `${stampSizePx}px`,
+                  height: `${stampSizePx}px`,
+                  objectFit: 'contain',
+                  opacity: 0.85,
+                  mixBlendMode: 'multiply',
+                  pointerEvents: 'none',
+                  zIndex: 1,
+                }}
+              />
+              <div
+                data-export-ignore="true"
+                onPointerDown={(e) => startMediaInteraction('move-stamp', 'stamp', e)}
+                title="Seret gambar stempel untuk memindahkan posisi dengan bebas"
+                style={{
+                  position: 'absolute',
+                  left: stampLeftCss,
+                  top: `${stampTopPx}px`,
+                  width: `${stampSizePx}px`,
+                  height: `${stampSizePx}px`,
+                  zIndex: isStampSelected ? 20 : 1,
+                  touchAction: 'none',
+                }}
+                className={`no-print group/stamp cursor-move rounded-full transition-all ${
+                  isStampSelected
+                    ? 'ring-2 ring-emerald-600 bg-emerald-500/5'
+                    : 'hover:ring-2 hover:ring-dashed hover:ring-emerald-500'
+                }`}
+              >
+                <span
+                  className={`absolute -top-5 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded bg-emerald-600 text-white text-[10px] font-sans font-semibold whitespace-nowrap pointer-events-none transition-opacity ${
+                    isStampSelected ? 'opacity-100' : 'opacity-0 group-hover/stamp:opacity-100'
+                  }`}
+                >
+                  Stempel ({stampSizePx}px)
+                </span>
+                <button
+                  type="button"
+                  onPointerDown={(e) => startMediaInteraction('resize-stamp', 'stamp', e)}
+                  title="Seret sudut untuk memperbesar / memperkecil gambar stempel"
+                  style={{ touchAction: 'none' }}
+                  className={`absolute -bottom-1 -right-1 w-4 h-4 rounded-sm bg-emerald-600 border-2 border-white shadow cursor-nwse-resize transition-opacity ${
+                    isStampSelected ? 'opacity-100' : 'opacity-0 group-hover/stamp:opacity-100'
+                  }`}
+                  aria-label="Ubah ukuran gambar stempel"
+                />
+              </div>
+            </>
+          )}
+          {sigImage && (
+            <div
+              style={{
+                position: 'relative',
+                left: `${sigOffsetX}px`,
+                top: `${sigOffsetY}px`,
+                zIndex: isSigSelected ? 15 : 2,
+                display: 'inline-block',
+                lineHeight: 0,
+              }}
+            >
+              <img
+                src={sigImage}
+                alt={`TTD ${personName}`}
+                draggable={false}
+                style={{
+                  display: 'block',
+                  height: `${sigPx}px`,
+                  maxWidth: `${Math.round(sigPx * 2.85)}px`,
+                  objectFit: 'contain',
+                  pointerEvents: 'none',
+                }}
+              />
+              <div
+                data-export-ignore="true"
+                onPointerDown={(e) =>
+                  startMediaInteraction(
+                    sigTarget === 'kepsek' ? 'move-kepsek-sig' : 'move-guru-sig',
+                    mediaKey,
+                    e
+                  )
+                }
+                title={`Seret gambar TTD ${
+                  sigTarget === 'kepsek' ? 'Kepala Sekolah' : 'Guru'
+                } untuk memindahkan posisi dengan bebas`}
+                style={{ touchAction: 'none' }}
+                className={`no-print group/sig absolute inset-0 cursor-move rounded transition-all ${
+                  isSigSelected
+                    ? 'ring-2 ring-indigo-600 bg-indigo-500/5'
+                    : 'hover:ring-2 hover:ring-dashed hover:ring-indigo-500'
+                }`}
+              >
+                <span
+                  className={`absolute -top-5 left-0 px-1.5 py-0.5 rounded bg-indigo-600 text-white text-[10px] font-sans font-semibold whitespace-nowrap pointer-events-none transition-opacity ${
+                    isSigSelected ? 'opacity-100' : 'opacity-0 group-hover/sig:opacity-100'
+                  }`}
+                >
+                  {sigTarget === 'kepsek' ? 'TTD Kepsek' : 'TTD Guru'} ({sigPx}px)
+                </span>
+                <button
+                  type="button"
+                  onPointerDown={(e) =>
+                    startMediaInteraction(
+                      sigTarget === 'kepsek' ? 'resize-kepsek-sig' : 'resize-guru-sig',
+                      mediaKey,
+                      e
+                    )
+                  }
+                  title="Seret sudut kanan bawah untuk memperbesar / memperkecil gambar TTD"
+                  style={{ touchAction: 'none' }}
+                  className={`absolute -bottom-1.5 -right-1.5 w-4 h-4 rounded-sm bg-indigo-600 border-2 border-white shadow cursor-nwse-resize transition-opacity ${
+                    isSigSelected ? 'opacity-100' : 'opacity-0 group-hover/sig:opacity-100'
+                  }`}
+                  aria-label="Ubah ukuran gambar tanda tangan"
+                />
+              </div>
+            </div>
+          )}
+        </div>
+        <p style={{ margin: 0, fontWeight: 700, textDecoration: 'underline', textUnderlineOffset: '2px' }}>
+          {personName}
+        </p>
+        <p style={{ margin: 0 }}>NIP. {personNip || '-'}</p>
       </div>
-      <p style={{ margin: 0, fontWeight: 700, textDecoration: 'underline', textUnderlineOffset: '2px' }}>
-        {personName}
-      </p>
-      <p style={{ margin: 0 }}>NIP. {personNip || '-'}</p>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="space-y-6">
@@ -2612,10 +2895,15 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
 
           <div className="bg-indigo-50/70 border border-indigo-200 rounded-xl p-3.5 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs font-semibold text-indigo-900">
-                Atur Posisi & Ukuran Gambar Tanda Tangan / Stempel (atau seret langsung kotak TTD di pratinjau bawah):
-              </p>
-              <div className="flex items-center gap-2">
+              <div>
+                <p className="text-xs font-semibold text-indigo-900">
+                  Posisi & Ukuran Bebas Gambar TTD / Stempel
+                </p>
+                <p className="text-[11px] text-indigo-700/80 mt-0.5">
+                  Seret gambar TTD / Stempel langsung di pratinjau bawah untuk memindahkan posisi, atau seret titik sudut kanan bawah gambar untuk memperbesar/memperkecil.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   type="button"
                   onClick={() =>
@@ -2633,6 +2921,22 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                   type="button"
                   onClick={() =>
                     updateSigPos({
+                      principalSigOffsetX: 0,
+                      principalSigOffsetY: 0,
+                      teacherSigOffsetX: 0,
+                      teacherSigOffsetY: 0,
+                      stampOffsetX: 0,
+                      stampOffsetY: 0,
+                    })
+                  }
+                  className="px-2.5 py-1 rounded-md bg-white border border-indigo-200 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
+                >
+                  Reset Posisi Gambar
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    updateSigPos({
                       preset: 'bebas',
                       principalX: 4,
                       principalY: 0,
@@ -2642,15 +2946,67 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                   }
                   className="px-2.5 py-1 rounded-md bg-white border border-indigo-200 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
                 >
-                  Reset Posisi
+                  Reset Posisi Blok
                 </button>
               </div>
             </div>
+
+            {/* Quick layer focus for overlapping stamp & signatures */}
+            <div className="flex flex-wrap items-center gap-2 text-xs bg-white/70 border border-indigo-100 rounded-lg px-2.5 py-1.5">
+              <span className="font-semibold text-slate-600">Pilih Objek Aktif di Pratinjau:</span>
+              <button
+                type="button"
+                onClick={() =>
+                  setSelectedMedia((prev) => (prev === 'kepsek-sig' ? null : 'kepsek-sig'))
+                }
+                className={`px-2 py-0.5 rounded font-semibold transition-colors ${
+                  selectedMedia === 'kepsek-sig'
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-slate-100 text-slate-700 hover:bg-indigo-100'
+                }`}
+              >
+                TTD Kepsek
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setSelectedMedia((prev) => (prev === 'guru-sig' ? null : 'guru-sig'))
+                }
+                className={`px-2 py-0.5 rounded font-semibold transition-colors ${
+                  selectedMedia === 'guru-sig'
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-slate-100 text-slate-700 hover:bg-indigo-100'
+                }`}
+              >
+                TTD Guru
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedMedia((prev) => (prev === 'stamp' ? null : 'stamp'))}
+                className={`px-2 py-0.5 rounded font-semibold transition-colors ${
+                  selectedMedia === 'stamp'
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-slate-100 text-slate-700 hover:bg-emerald-100'
+                }`}
+              >
+                Stempel Sekolah
+              </button>
+              {selectedMedia && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedMedia(null)}
+                  className="ml-auto text-[11px] font-medium text-slate-500 hover:text-slate-800"
+                >
+                  Selesai Pilih
+                </button>
+              )}
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
               <div className="bg-white/80 rounded-lg border border-indigo-100 p-2.5 space-y-1.5">
                 <div className="flex items-center justify-between gap-1">
                   <span className="font-semibold text-slate-700">
-                    Kepsek Kiri ↔ Kanan: {sigPos.principalX}%
+                    Blok Kepsek Kiri ↔ Kanan: {sigPos.principalX}%
                   </span>
                   <div className="inline-flex items-center gap-1">
                     <button
@@ -2671,7 +3027,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                       onClick={() =>
                         updateSigPos({
                           preset: 'bebas',
-                          principalX: Math.min(76, sigPos.principalX + 1),
+                          principalX: Math.min(82, sigPos.principalX + 1),
                         })
                       }
                       aria-label="Geser Kepsek ke kanan"
@@ -2684,7 +3040,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                 <input
                   type="range"
                   min={0}
-                  max={76}
+                  max={82}
                   value={sigPos.principalX}
                   onChange={(e) =>
                     updateSigPos({ preset: 'bebas', principalX: Number(e.target.value) })
@@ -2696,13 +3052,13 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
               <div className="bg-white/80 rounded-lg border border-indigo-100 p-2.5 space-y-1.5">
                 <div className="flex items-center justify-between gap-1">
                   <span className="font-semibold text-slate-700">
-                    Kepsek Atas / Bawah: {sigPos.principalY}px
+                    Blok Kepsek Atas / Bawah: {sigPos.principalY}px
                   </span>
                 </div>
                 <input
                   type="range"
                   min={0}
-                  max={160}
+                  max={240}
                   value={sigPos.principalY}
                   onChange={(e) =>
                     updateSigPos({ preset: 'bebas', principalY: Number(e.target.value) })
@@ -2714,7 +3070,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
               <div className="bg-white/80 rounded-lg border border-indigo-100 p-2.5 space-y-1.5">
                 <div className="flex items-center justify-between gap-1">
                   <span className="font-semibold text-slate-700">
-                    Guru Kiri ↔ Kanan: {sigPos.teacherX}%
+                    Blok Guru Kiri ↔ Kanan: {sigPos.teacherX}%
                   </span>
                   <div className="inline-flex items-center gap-1">
                     <button
@@ -2735,7 +3091,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                       onClick={() =>
                         updateSigPos({
                           preset: 'bebas',
-                          teacherX: Math.min(76, sigPos.teacherX + 1),
+                          teacherX: Math.min(82, sigPos.teacherX + 1),
                         })
                       }
                       aria-label="Geser Guru ke kanan"
@@ -2748,7 +3104,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                 <input
                   type="range"
                   min={0}
-                  max={76}
+                  max={82}
                   value={sigPos.teacherX}
                   onChange={(e) =>
                     updateSigPos({ preset: 'bebas', teacherX: Number(e.target.value) })
@@ -2760,13 +3116,13 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
               <div className="bg-white/80 rounded-lg border border-indigo-100 p-2.5 space-y-1.5">
                 <div className="flex items-center justify-between gap-1">
                   <span className="font-semibold text-slate-700">
-                    Guru Atas / Bawah: {sigPos.teacherY}px
+                    Blok Guru Atas / Bawah: {sigPos.teacherY}px
                   </span>
                 </div>
                 <input
                   type="range"
                   min={0}
-                  max={160}
+                  max={240}
                   value={sigPos.teacherY}
                   onChange={(e) =>
                     updateSigPos({ preset: 'bebas', teacherY: Number(e.target.value) })
@@ -2776,27 +3132,50 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-              <div className="bg-white/80 rounded-lg border border-indigo-100 p-2.5 space-y-1.5">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 text-xs">
+              {/* Gambar TTD Kepsek */}
+              <div
+                className={`bg-white/90 rounded-lg border p-2.5 space-y-2 transition-colors ${
+                  selectedMedia === 'kepsek-sig' ? 'border-indigo-500 ring-1 ring-indigo-300' : 'border-indigo-100'
+                }`}
+              >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold text-slate-700 tabular-nums">
-                    Ukuran TTD Kepsek: {kepsekSigSizePx}px
-                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedMedia('kepsek-sig')}
+                    className="font-semibold text-slate-800 hover:text-indigo-700 text-left tabular-nums"
+                  >
+                    TTD Kepsek ({kepsekSigSizePx}px)
+                  </button>
                   <div className="inline-flex items-center gap-1">
                     <button
                       type="button"
                       onClick={() =>
-                        updateSigPos({ principalSignatureSize: Math.max(28, kepsekSigSizePx - 4) })
+                        updateSigPos({ principalSignatureSize: Math.max(16, kepsekSigSizePx - 4) })
                       }
                       aria-label="Perkecil TTD Kepala Sekolah"
                       className="w-5 h-5 rounded border border-slate-200 bg-white hover:bg-slate-100 font-bold text-slate-700"
                     >
                       -
                     </button>
+                    <input
+                      type="number"
+                      min={16}
+                      max={260}
+                      value={kepsekSigSizePx}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        if (!Number.isNaN(v)) {
+                          updateSigPos({ principalSignatureSize: Math.max(16, Math.min(260, v)) });
+                        }
+                      }}
+                      aria-label="Ukuran TTD Kepala Sekolah px"
+                      className="w-12 px-1 py-0.5 text-center border border-slate-200 rounded text-[11px] font-semibold tabular-nums"
+                    />
                     <button
                       type="button"
                       onClick={() =>
-                        updateSigPos({ principalSignatureSize: Math.min(130, kepsekSigSizePx + 4) })
+                        updateSigPos({ principalSignatureSize: Math.min(260, kepsekSigSizePx + 4) })
                       }
                       aria-label="Perbesar TTD Kepala Sekolah"
                       className="w-5 h-5 rounded border border-slate-200 bg-white hover:bg-slate-100 font-bold text-slate-700"
@@ -2807,8 +3186,8 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                 </div>
                 <input
                   type="range"
-                  min={28}
-                  max={130}
+                  min={16}
+                  max={260}
                   value={kepsekSigSizePx}
                   onChange={(e) =>
                     updateSigPos({ principalSignatureSize: Number(e.target.value) })
@@ -2816,28 +3195,85 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                   aria-label="Slider ukuran TTD Kepala Sekolah"
                   className="w-full accent-indigo-600"
                 />
+                <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-100">
+                  <div>
+                    <span className="block text-[10px] text-slate-500 tabular-nums">
+                      Geser X: {kepsekSigOffsetX}px
+                    </span>
+                    <input
+                      type="range"
+                      min={-350}
+                      max={350}
+                      value={kepsekSigOffsetX}
+                      onChange={(e) =>
+                        updateSigPos({ principalSigOffsetX: Number(e.target.value) })
+                      }
+                      aria-label="Geser horizontal gambar TTD Kepsek"
+                      className="w-full accent-indigo-600"
+                    />
+                  </div>
+                  <div>
+                    <span className="block text-[10px] text-slate-500 tabular-nums">
+                      Geser Y: {kepsekSigOffsetY}px
+                    </span>
+                    <input
+                      type="range"
+                      min={-160}
+                      max={200}
+                      value={kepsekSigOffsetY}
+                      onChange={(e) =>
+                        updateSigPos({ principalSigOffsetY: Number(e.target.value) })
+                      }
+                      aria-label="Geser vertikal gambar TTD Kepsek"
+                      className="w-full accent-indigo-600"
+                    />
+                  </div>
+                </div>
               </div>
 
-              <div className="bg-white/80 rounded-lg border border-indigo-100 p-2.5 space-y-1.5">
+              {/* Gambar TTD Guru / Akun */}
+              <div
+                className={`bg-white/90 rounded-lg border p-2.5 space-y-2 transition-colors ${
+                  selectedMedia === 'guru-sig' ? 'border-indigo-500 ring-1 ring-indigo-300' : 'border-indigo-100'
+                }`}
+              >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold text-slate-700 tabular-nums">
-                    Ukuran TTD Guru / Akun: {guruSigSizePx}px
-                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedMedia('guru-sig')}
+                    className="font-semibold text-slate-800 hover:text-indigo-700 text-left tabular-nums"
+                  >
+                    TTD Guru ({guruSigSizePx}px)
+                  </button>
                   <div className="inline-flex items-center gap-1">
                     <button
                       type="button"
                       onClick={() =>
-                        updateSigPos({ teacherSignatureSize: Math.max(28, guruSigSizePx - 4) })
+                        updateSigPos({ teacherSignatureSize: Math.max(16, guruSigSizePx - 4) })
                       }
                       aria-label="Perkecil TTD Guru"
                       className="w-5 h-5 rounded border border-slate-200 bg-white hover:bg-slate-100 font-bold text-slate-700"
                     >
                       -
                     </button>
+                    <input
+                      type="number"
+                      min={16}
+                      max={260}
+                      value={guruSigSizePx}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        if (!Number.isNaN(v)) {
+                          updateSigPos({ teacherSignatureSize: Math.max(16, Math.min(260, v)) });
+                        }
+                      }}
+                      aria-label="Ukuran TTD Guru px"
+                      className="w-12 px-1 py-0.5 text-center border border-slate-200 rounded text-[11px] font-semibold tabular-nums"
+                    />
                     <button
                       type="button"
                       onClick={() =>
-                        updateSigPos({ teacherSignatureSize: Math.min(130, guruSigSizePx + 4) })
+                        updateSigPos({ teacherSignatureSize: Math.min(260, guruSigSizePx + 4) })
                       }
                       aria-label="Perbesar TTD Guru"
                       className="w-5 h-5 rounded border border-slate-200 bg-white hover:bg-slate-100 font-bold text-slate-700"
@@ -2848,8 +3284,8 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                 </div>
                 <input
                   type="range"
-                  min={28}
-                  max={130}
+                  min={16}
+                  max={260}
                   value={guruSigSizePx}
                   onChange={(e) =>
                     updateSigPos({ teacherSignatureSize: Number(e.target.value) })
@@ -2857,28 +3293,85 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                   aria-label="Slider ukuran TTD Guru"
                   className="w-full accent-indigo-600"
                 />
+                <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-100">
+                  <div>
+                    <span className="block text-[10px] text-slate-500 tabular-nums">
+                      Geser X: {guruSigOffsetX}px
+                    </span>
+                    <input
+                      type="range"
+                      min={-350}
+                      max={350}
+                      value={guruSigOffsetX}
+                      onChange={(e) =>
+                        updateSigPos({ teacherSigOffsetX: Number(e.target.value) })
+                      }
+                      aria-label="Geser horizontal gambar TTD Guru"
+                      className="w-full accent-indigo-600"
+                    />
+                  </div>
+                  <div>
+                    <span className="block text-[10px] text-slate-500 tabular-nums">
+                      Geser Y: {guruSigOffsetY}px
+                    </span>
+                    <input
+                      type="range"
+                      min={-160}
+                      max={200}
+                      value={guruSigOffsetY}
+                      onChange={(e) =>
+                        updateSigPos({ teacherSigOffsetY: Number(e.target.value) })
+                      }
+                      aria-label="Geser vertikal gambar TTD Guru"
+                      className="w-full accent-indigo-600"
+                    />
+                  </div>
+                </div>
               </div>
 
-              <div className="bg-white/80 rounded-lg border border-indigo-100 p-2.5 space-y-1.5">
+              {/* Gambar Stempel Sekolah */}
+              <div
+                className={`bg-white/90 rounded-lg border p-2.5 space-y-2 transition-colors ${
+                  selectedMedia === 'stamp' ? 'border-emerald-500 ring-1 ring-emerald-300' : 'border-indigo-100'
+                }`}
+              >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold text-slate-700 tabular-nums">
-                    Ukuran Gambar Stempel: {stampSizePx}px
-                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedMedia('stamp')}
+                    className="font-semibold text-slate-800 hover:text-emerald-700 text-left tabular-nums"
+                  >
+                    Stempel ({stampSizePx}px)
+                  </button>
                   <div className="inline-flex items-center gap-1">
                     <button
                       type="button"
                       onClick={() =>
-                        updateSigPos({ stampSize: Math.max(32, stampSizePx - 4) })
+                        updateSigPos({ stampSize: Math.max(20, stampSizePx - 4) })
                       }
                       aria-label="Perkecil gambar stempel"
                       className="w-5 h-5 rounded border border-slate-200 bg-white hover:bg-slate-100 font-bold text-slate-700"
                     >
                       -
                     </button>
+                    <input
+                      type="number"
+                      min={20}
+                      max={260}
+                      value={stampSizePx}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        if (!Number.isNaN(v)) {
+                          updateSigPos({ stampSize: Math.max(20, Math.min(260, v)) });
+                        }
+                      }}
+                      aria-label="Ukuran gambar stempel px"
+                      className="w-12 px-1 py-0.5 text-center border border-slate-200 rounded text-[11px] font-semibold tabular-nums"
+                    />
                     <button
                       type="button"
                       onClick={() =>
-                        updateSigPos({ stampSize: Math.min(130, stampSizePx + 4) })
+                        updateSigPos({ stampSize: Math.min(260, stampSizePx + 4) })
                       }
                       aria-label="Perbesar gambar stempel"
                       className="w-5 h-5 rounded border border-slate-200 bg-white hover:bg-slate-100 font-bold text-slate-700"
@@ -2889,13 +3382,43 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                 </div>
                 <input
                   type="range"
-                  min={32}
-                  max={130}
+                  min={20}
+                  max={260}
                   value={stampSizePx}
                   onChange={(e) => updateSigPos({ stampSize: Number(e.target.value) })}
                   aria-label="Slider ukuran gambar stempel"
-                  className="w-full accent-indigo-600"
+                  className="w-full accent-emerald-600"
                 />
+                <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-100">
+                  <div>
+                    <span className="block text-[10px] text-slate-500 tabular-nums">
+                      Geser X: {stampOffsetX}px
+                    </span>
+                    <input
+                      type="range"
+                      min={-550}
+                      max={550}
+                      value={stampOffsetX}
+                      onChange={(e) => updateSigPos({ stampOffsetX: Number(e.target.value) })}
+                      aria-label="Geser horizontal gambar stempel"
+                      className="w-full accent-emerald-600"
+                    />
+                  </div>
+                  <div>
+                    <span className="block text-[10px] text-slate-500 tabular-nums">
+                      Geser Y: {stampOffsetY}px
+                    </span>
+                    <input
+                      type="range"
+                      min={-200}
+                      max={200}
+                      value={stampOffsetY}
+                      onChange={(e) => updateSigPos({ stampOffsetY: Number(e.target.value) })}
+                      aria-label="Geser vertikal gambar stempel"
+                      className="w-full accent-emerald-600"
+                    />
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -3703,8 +4226,6 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                 <div
                   ref={sigCanvasRef}
                   data-sig-canvas="true"
-                  onPointerMove={handleSigPointerMove}
-                  onPointerUp={handleSigPointerUp}
                   style={{
                     position: 'relative',
                     minHeight: `${Math.max(215, Math.max(sigPos.principalY, sigPos.teacherY) + 155)}px`,
@@ -3715,13 +4236,17 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                     <div
                       data-sig-block="kepsek"
                       onPointerDown={(e) => handleSigPointerDown('kepsek', e)}
-                      title="Seret ke kanan / kiri untuk mengatur posisi Kepala Sekolah"
+                      title="Seret teks blok untuk mengatur posisi Kepala Sekolah"
                       style={{
                         position: 'absolute',
                         left: `${sigPos.principalX}%`,
                         top: `${sigPos.principalY}px`,
                         width: '220px',
-                        cursor: dragTarget === 'kepsek' ? 'grabbing' : 'grab',
+                        cursor:
+                          activeInteraction?.kind === 'block' &&
+                          activeInteraction.target === 'kepsek'
+                            ? 'grabbing'
+                            : 'grab',
                         userSelect: 'none',
                         touchAction: 'none',
                         padding: '4px',
@@ -3733,16 +4258,19 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                         data-export-ignore="true"
                         className="no-print opacity-0 group-hover:opacity-100 transition-opacity absolute -top-5 left-0 px-1.5 py-0.5 rounded bg-indigo-600 text-white text-[10px] font-sans font-semibold whitespace-nowrap pointer-events-none"
                       >
-                        Geser Kiri/Kanan ({sigPos.principalX}%)
+                        Geser Blok ({sigPos.principalX}%, {sigPos.principalY}px)
                       </span>
                       {renderSigCard(
+                        'kepsek',
                         'Mengetahui,',
                         settings.principalTitle,
                         settings.principalName,
                         settings.principalNip,
                         showSignatureImage ? settings.principalSignatureImage : '',
                         stampOnKepsek,
-                        kepsekSigSizePx
+                        kepsekSigSizePx,
+                        kepsekSigOffsetX,
+                        kepsekSigOffsetY
                       )}
                     </div>
                   )}
@@ -3750,13 +4278,17 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                     <div
                       data-sig-block="guru"
                       onPointerDown={(e) => handleSigPointerDown('guru', e)}
-                      title="Seret ke kanan / kiri untuk mengatur posisi Guru / Pemilik Akun"
+                      title="Seret teks blok untuk mengatur posisi Guru / Pemilik Akun"
                       style={{
                         position: 'absolute',
                         left: `${sigPos.teacherX}%`,
                         top: `${sigPos.teacherY}px`,
                         width: '220px',
-                        cursor: dragTarget === 'guru' ? 'grabbing' : 'grab',
+                        cursor:
+                          activeInteraction?.kind === 'block' &&
+                          activeInteraction.target === 'guru'
+                            ? 'grabbing'
+                            : 'grab',
                         userSelect: 'none',
                         touchAction: 'none',
                         padding: '4px',
@@ -3768,62 +4300,66 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                         data-export-ignore="true"
                         className="no-print opacity-0 group-hover:opacity-100 transition-opacity absolute -top-5 left-0 px-1.5 py-0.5 rounded bg-indigo-600 text-white text-[10px] font-sans font-semibold whitespace-nowrap pointer-events-none"
                       >
-                        Geser Kiri/Kanan ({sigPos.teacherX}%)
+                        Geser Blok ({sigPos.teacherX}%, {sigPos.teacherY}px)
                       </span>
                       {renderSigCard(
+                        'guru',
                         `${settings.signatureLocation}, ${formatLongDateId(getTodayISO())}`,
                         activeSigner.roleLabel,
                         activeSigner.name,
                         activeSigner.nip,
                         showSignatureImage ? activeSigner.signatureImage : '',
                         stampOnGuru,
-                        guruSigSizePx
+                        guruSigSizePx,
+                        guruSigOffsetX,
+                        guruSigOffsetY
                       )}
                     </div>
                   )}
                 </div>
               ) : (
-                <div
-                  ref={sigCanvasRef}
-                  onPointerMove={handleSigPointerMove}
-                  onPointerUp={handleSigPointerUp}
-                  style={{ width: '100%' }}
-                >
+                <div ref={sigCanvasRef} style={{ width: '100%' }}>
                   {sigPos.preset === 'kiri' ? (
                     <div style={{ paddingLeft: '16px' }}>
                       {showTtdKepsek && (
                         <div
                           onPointerDown={(e) => handleSigPointerDown('kepsek', e)}
-                          title="Seret ke kanan / kiri untuk menyesuaikan posisi"
+                          title="Seret blok untuk menyesuaikan posisi"
                           style={{ width: '220px', marginBottom: '20px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
                           className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
                         >
                           {renderSigCard(
+                            'kepsek',
                             'Mengetahui,',
                             settings.principalTitle,
                             settings.principalName,
                             settings.principalNip,
                             showSignatureImage ? settings.principalSignatureImage : '',
                             stampOnKepsek,
-                            kepsekSigSizePx
+                            kepsekSigSizePx,
+                            kepsekSigOffsetX,
+                            kepsekSigOffsetY
                           )}
                         </div>
                       )}
                       {showTtdGuru && (
                         <div
                           onPointerDown={(e) => handleSigPointerDown('guru', e)}
-                          title="Seret ke kanan / kiri untuk menyesuaikan posisi"
+                          title="Seret blok untuk menyesuaikan posisi"
                           style={{ width: '220px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
                           className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
                         >
                           {renderSigCard(
+                            'guru',
                             `${settings.signatureLocation}, ${formatLongDateId(getTodayISO())}`,
                             activeSigner.roleLabel,
                             activeSigner.name,
                             activeSigner.nip,
                             showSignatureImage ? activeSigner.signatureImage : '',
                             stampOnGuru,
-                            guruSigSizePx
+                            guruSigSizePx,
+                            guruSigOffsetX,
+                            guruSigOffsetY
                           )}
                         </div>
                       )}
@@ -3833,36 +4369,42 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                       {showTtdKepsek && (
                         <div
                           onPointerDown={(e) => handleSigPointerDown('kepsek', e)}
-                          title="Seret ke kanan / kiri untuk menyesuaikan posisi"
+                          title="Seret blok untuk menyesuaikan posisi"
                           style={{ marginBottom: '20px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
                           className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
                         >
                           {renderSigCard(
+                            'kepsek',
                             'Mengetahui,',
                             settings.principalTitle,
                             settings.principalName,
                             settings.principalNip,
                             showSignatureImage ? settings.principalSignatureImage : '',
                             stampOnKepsek,
-                            kepsekSigSizePx
+                            kepsekSigSizePx,
+                            kepsekSigOffsetX,
+                            kepsekSigOffsetY
                           )}
                         </div>
                       )}
                       {showTtdGuru && (
                         <div
                           onPointerDown={(e) => handleSigPointerDown('guru', e)}
-                          title="Seret ke kanan / kiri untuk menyesuaikan posisi"
+                          title="Seret blok untuk menyesuaikan posisi"
                           style={{ cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
                           className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
                         >
                           {renderSigCard(
+                            'guru',
                             `${settings.signatureLocation}, ${formatLongDateId(getTodayISO())}`,
                             activeSigner.roleLabel,
                             activeSigner.name,
                             activeSigner.nip,
                             showSignatureImage ? activeSigner.signatureImage : '',
                             stampOnGuru,
-                            guruSigSizePx
+                            guruSigSizePx,
+                            guruSigOffsetX,
+                            guruSigOffsetY
                           )}
                         </div>
                       )}
@@ -3875,18 +4417,21 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                             <td style={{ verticalAlign: 'top', textAlign: 'center', border: 'none' }}>
                               <div
                                 onPointerDown={(e) => handleSigPointerDown('kepsek', e)}
-                                title="Seret ke kanan / kiri untuk menyesuaikan posisi"
+                                title="Seret blok untuk menyesuaikan posisi"
                                 style={{ display: 'inline-block', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
                                 className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
                               >
                                 {renderSigCard(
+                                  'kepsek',
                                   'Mengetahui,',
                                   settings.principalTitle,
                                   settings.principalName,
                                   settings.principalNip,
                                   showSignatureImage ? settings.principalSignatureImage : '',
                                   stampOnKepsek,
-                                  kepsekSigSizePx
+                                  kepsekSigSizePx,
+                                  kepsekSigOffsetX,
+                                  kepsekSigOffsetY
                                 )}
                               </div>
                             </td>
@@ -3895,18 +4440,21 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                             <td style={{ verticalAlign: 'top', textAlign: 'center', border: 'none' }}>
                               <div
                                 onPointerDown={(e) => handleSigPointerDown('guru', e)}
-                                title="Seret ke kanan / kiri untuk menyesuaikan posisi"
+                                title="Seret blok untuk menyesuaikan posisi"
                                 style={{ display: 'inline-block', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
                                 className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
                               >
                                 {renderSigCard(
+                                  'guru',
                                   `${settings.signatureLocation}, ${formatLongDateId(getTodayISO())}`,
                                   activeSigner.roleLabel,
                                   activeSigner.name,
                                   activeSigner.nip,
                                   showSignatureImage ? activeSigner.signatureImage : '',
                                   stampOnGuru,
-                                  guruSigSizePx
+                                  guruSigSizePx,
+                                  guruSigOffsetX,
+                                  guruSigOffsetY
                                 )}
                               </div>
                             </td>
@@ -3922,18 +4470,21 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                             {showTtdGuru && (
                               <div
                                 onPointerDown={(e) => handleSigPointerDown('guru', e)}
-                                title="Seret ke kanan / kiri untuk menyesuaikan posisi"
+                                title="Seret blok untuk menyesuaikan posisi"
                                 style={{ width: '220px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
                                 className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
                               >
                                 {renderSigCard(
+                                  'guru',
                                   `${settings.signatureLocation}, ${formatLongDateId(getTodayISO())}`,
                                   activeSigner.roleLabel,
                                   activeSigner.name,
                                   activeSigner.nip,
                                   showSignatureImage ? activeSigner.signatureImage : '',
                                   stampOnGuru,
-                                  guruSigSizePx
+                                  guruSigSizePx,
+                                  guruSigOffsetX,
+                                  guruSigOffsetY
                                 )}
                               </div>
                             )}
@@ -3942,18 +4493,21 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                             {showTtdKepsek && (
                               <div
                                 onPointerDown={(e) => handleSigPointerDown('kepsek', e)}
-                                title="Seret ke kanan / kiri untuk menyesuaikan posisi"
+                                title="Seret blok untuk menyesuaikan posisi"
                                 style={{ width: '220px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
                                 className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
                               >
                                 {renderSigCard(
+                                  'kepsek',
                                   'Mengetahui,',
                                   settings.principalTitle,
                                   settings.principalName,
                                   settings.principalNip,
                                   showSignatureImage ? settings.principalSignatureImage : '',
                                   stampOnKepsek,
-                                  kepsekSigSizePx
+                                  kepsekSigSizePx,
+                                  kepsekSigOffsetX,
+                                  kepsekSigOffsetY
                                 )}
                               </div>
                             )}
@@ -3969,18 +4523,21 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                             {showTtdKepsek && (
                               <div
                                 onPointerDown={(e) => handleSigPointerDown('kepsek', e)}
-                                title="Seret ke kanan / kiri untuk menyesuaikan posisi"
+                                title="Seret blok untuk menyesuaikan posisi"
                                 style={{ width: '220px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
                                 className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
                               >
                                 {renderSigCard(
+                                  'kepsek',
                                   'Mengetahui,',
                                   settings.principalTitle,
                                   settings.principalName,
                                   settings.principalNip,
                                   showSignatureImage ? settings.principalSignatureImage : '',
                                   stampOnKepsek,
-                                  kepsekSigSizePx
+                                  kepsekSigSizePx,
+                                  kepsekSigOffsetX,
+                                  kepsekSigOffsetY
                                 )}
                               </div>
                             )}
@@ -3989,18 +4546,21 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                             {showTtdGuru && (
                               <div
                                 onPointerDown={(e) => handleSigPointerDown('guru', e)}
-                                title="Seret ke kanan / kiri untuk menyesuaikan posisi"
+                                title="Seret blok untuk menyesuaikan posisi"
                                 style={{ width: '220px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
                                 className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
                               >
                                 {renderSigCard(
+                                  'guru',
                                   `${settings.signatureLocation}, ${formatLongDateId(getTodayISO())}`,
                                   activeSigner.roleLabel,
                                   activeSigner.name,
                                   activeSigner.nip,
                                   showSignatureImage ? activeSigner.signatureImage : '',
                                   stampOnGuru,
-                                  guruSigSizePx
+                                  guruSigSizePx,
+                                  guruSigOffsetX,
+                                  guruSigOffsetY
                                 )}
                               </div>
                             )}

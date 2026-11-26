@@ -275,16 +275,22 @@ async function buildOfficialPrintHtml(options: {
     : '';
 
   const kepsekSigSizePx = Math.max(
-    24,
-    Math.min(160, sigPos.principalSignatureSize ?? sigPos.signatureSize ?? 60)
+    16,
+    Math.min(260, sigPos.principalSignatureSize ?? sigPos.signatureSize ?? 60)
   );
   const guruSigSizePx = Math.max(
-    24,
-    Math.min(160, sigPos.teacherSignatureSize ?? sigPos.signatureSize ?? 60)
+    16,
+    Math.min(260, sigPos.teacherSignatureSize ?? sigPos.signatureSize ?? 60)
   );
-  const stampSizePx = Math.max(28, Math.min(160, sigPos.stampSize ?? 70));
-  const stampLeftPx = 17 - Math.round(stampSizePx / 2);
-  const stampTopPx = Math.round((68 - stampSizePx) / 2);
+  const stampSizePx = Math.max(20, Math.min(260, sigPos.stampSize ?? 70));
+  const kepsekSigOffsetX = sigPos.principalSigOffsetX ?? 0;
+  const kepsekSigOffsetY = sigPos.principalSigOffsetY ?? 0;
+  const guruSigOffsetX = sigPos.teacherSigOffsetX ?? 0;
+  const guruSigOffsetY = sigPos.teacherSigOffsetY ?? 0;
+  const stampOffsetX = sigPos.stampOffsetX ?? 0;
+  const stampOffsetY = sigPos.stampOffsetY ?? 0;
+  const stampLeftPx = 17 - Math.round(stampSizePx / 2) + stampOffsetX;
+  const stampTopPx = Math.round((68 - stampSizePx) / 2) + stampOffsetY;
 
   const renderSigBox = (
     topLabel: string,
@@ -293,7 +299,9 @@ async function buildOfficialPrintHtml(options: {
     personNip: string,
     sigUrl: string | null,
     withStamp: boolean,
-    sigPx: number
+    sigPx: number,
+    sigOffsetX: number,
+    sigOffsetY: number
   ) => `
     <div style="font-size:10pt; line-height:1.35;">
       <div>${escapeHtml(topLabel)}</div>
@@ -306,7 +314,7 @@ async function buildOfficialPrintHtml(options: {
         }
         ${
           sigUrl
-            ? `<img src="${sigUrl}" style="position:relative; z-index:2; height:${sigPx}px; max-width:${Math.round(sigPx * 2.85)}px; object-fit:contain; margin-top:${Math.round((68 - sigPx) / 2)}px;" />`
+            ? `<img src="${sigUrl}" style="position:relative; z-index:2; left:${sigOffsetX}px; top:${sigOffsetY}px; height:${sigPx}px; max-width:${Math.round(sigPx * 2.85)}px; object-fit:contain; margin-top:${Math.round((68 - sigPx) / 2)}px;" />`
             : ''
         }
       </div>
@@ -328,7 +336,9 @@ async function buildOfficialPrintHtml(options: {
         settings.principalNip,
         kepsekSigPng,
         stampOnKepsek,
-        kepsekSigSizePx
+        kepsekSigSizePx,
+        kepsekSigOffsetX,
+        kepsekSigOffsetY
       )
     : '';
 
@@ -340,7 +350,9 @@ async function buildOfficialPrintHtml(options: {
         signer.nip,
         guruSigPng,
         stampOnGuru,
-        guruSigSizePx
+        guruSigSizePx,
+        guruSigOffsetX,
+        guruSigOffsetY
       )
     : '';
 
@@ -659,15 +671,21 @@ export async function exportDatasetToPdf(options: {
   cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
 
   const kepsekSigSizePx = Math.max(
-    24,
-    Math.min(160, sigPos.principalSignatureSize ?? sigPos.signatureSize ?? 60)
+    16,
+    Math.min(260, sigPos.principalSignatureSize ?? sigPos.signatureSize ?? 60)
   );
   const guruSigSizePx = Math.max(
-    24,
-    Math.min(160, sigPos.teacherSignatureSize ?? sigPos.signatureSize ?? 60)
+    16,
+    Math.min(260, sigPos.teacherSignatureSize ?? sigPos.signatureSize ?? 60)
   );
-  const stampSizePx = Math.max(28, Math.min(160, sigPos.stampSize ?? 70));
+  const stampSizePx = Math.max(20, Math.min(260, sigPos.stampSize ?? 70));
   const stampMm = Number((stampSizePx * 0.285).toFixed(2));
+  const kepsekSigOffsetX = sigPos.principalSigOffsetX ?? 0;
+  const kepsekSigOffsetY = sigPos.principalSigOffsetY ?? 0;
+  const guruSigOffsetX = sigPos.teacherSigOffsetX ?? 0;
+  const guruSigOffsetY = sigPos.teacherSigOffsetY ?? 0;
+  const stampOffsetX = sigPos.stampOffsetX ?? 0;
+  const stampOffsetY = sigPos.stampOffsetY ?? 0;
 
   if (cursorY > pageHeight - 48) {
     doc.addPage();
@@ -683,7 +701,9 @@ export async function exportDatasetToPdf(options: {
     personNip: string,
     sigUrl: string | null,
     withStamp: boolean,
-    sigPx: number
+    sigPx: number,
+    sigOffsetX: number,
+    sigOffsetY: number
   ) => {
     const sigH = Number((sigPx * 0.265).toFixed(2));
     const sigW = Number((sigH * 2.38).toFixed(2));
@@ -692,10 +712,26 @@ export async function exportDatasetToPdf(options: {
     doc.text(topLabel, xMm, yMm);
     doc.text(roleTitle, xMm, yMm + 4.5);
     if (withStamp && stampPng) {
-      doc.addImage(stampPng, 'PNG', xMm + 4 - stampMm / 2, yMm + 15.5 - stampMm / 2, stampMm, stampMm);
+      const stampCenterX = xMm + 4 + stampOffsetX * 0.265;
+      const stampCenterY = yMm + 15.5 + stampOffsetY * 0.265;
+      doc.addImage(
+        stampPng,
+        'PNG',
+        stampCenterX - stampMm / 2,
+        stampCenterY - stampMm / 2,
+        stampMm,
+        stampMm
+      );
     }
     if (sigUrl) {
-      doc.addImage(sigUrl, 'PNG', xMm, yMm + 14.5 - sigH / 2, sigW, sigH);
+      doc.addImage(
+        sigUrl,
+        'PNG',
+        xMm + sigOffsetX * 0.265,
+        yMm + 14.5 - sigH / 2 + sigOffsetY * 0.265,
+        sigW,
+        sigH
+      );
     }
     doc.setFont(pdfFont, 'bold');
     doc.text(personName, xMm, yMm + 25);
@@ -745,7 +781,9 @@ export async function exportDatasetToPdf(options: {
     settings.principalNip,
     kepsekSigPng,
     stampOnKepsek,
-    kepsekSigSizePx
+    kepsekSigSizePx,
+    kepsekSigOffsetX,
+    kepsekSigOffsetY
   );
   drawPdfSigBlock(
     guruX,
@@ -756,7 +794,9 @@ export async function exportDatasetToPdf(options: {
     signer.nip,
     guruSigPng,
     stampOnGuru,
-    guruSigSizePx
+    guruSigSizePx,
+    guruSigOffsetX,
+    guruSigOffsetY
   );
 
   doc.save(filename.endsWith('.pdf') ? filename : `${filename}.pdf`);

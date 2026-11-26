@@ -107,6 +107,12 @@ export function createDefaultSettings(): SystemSettings {
       principalSignatureSize: 60,
       teacherSignatureSize: 60,
       stampSize: 70,
+      principalSigOffsetX: 0,
+      principalSigOffsetY: 0,
+      teacherSigOffsetX: 0,
+      teacherSigOffsetY: 0,
+      stampOffsetX: 0,
+      stampOffsetY: 0,
     },
     reportPrintPreferences: {
       reportType: 'journal',

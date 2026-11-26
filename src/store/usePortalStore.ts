@@ -70,6 +70,12 @@ function normalizeSignaturePosition(
     teacherSignatureSize:
       raw?.teacherSignatureSize ?? legacySig ?? fallback.teacherSignatureSize,
     stampSize: raw?.stampSize ?? fallback.stampSize,
+    principalSigOffsetX: raw?.principalSigOffsetX ?? fallback.principalSigOffsetX,
+    principalSigOffsetY: raw?.principalSigOffsetY ?? fallback.principalSigOffsetY,
+    teacherSigOffsetX: raw?.teacherSigOffsetX ?? fallback.teacherSigOffsetX,
+    teacherSigOffsetY: raw?.teacherSigOffsetY ?? fallback.teacherSigOffsetY,
+    stampOffsetX: raw?.stampOffsetX ?? fallback.stampOffsetX,
+    stampOffsetY: raw?.stampOffsetY ?? fallback.stampOffsetY,
   };
 }
 
