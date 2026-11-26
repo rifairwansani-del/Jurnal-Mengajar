@@ -1,0 +1,121 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    background-color: #f8fafc;
+    color: #0f172a;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+.font-mono-tabular {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom sleek scrollbar for data tables */
+.table-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.table-scroll::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+.table-scroll::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+.table-scroll::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+@media print {
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .print-area {
+    box-shadow: none !important;
+    border: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  .print-page-break {
+    page-break-before: always;
+  }
+}
+
+/* Midnight Dark theme overrides (excludes .print-area so print preview always looks like crisp white paper) */
+.theme-dark {
+  color-scheme: dark;
+}
+
+.theme-dark main .bg-white:not(.print-area):not(.print-area *),
+.theme-dark header.bg-white\/95 {
+  background-color: #0f172a !important;
+  color: #f1f5f9;
+}
+
+.theme-dark main .bg-slate-50:not(.print-area):not(.print-area *),
+.theme-dark main .bg-slate-50\/80:not(.print-area):not(.print-area *),
+.theme-dark main .bg-slate-50\/70:not(.print-area):not(.print-area *) {
+  background-color: #1e293b !important;
+}
+
+.theme-dark main .bg-slate-100:not(.print-area):not(.print-area *) {
+  background-color: #1e293b !important;
+  color: #e2e8f0;
+}
+
+.theme-dark main .border-slate-200:not(.print-area):not(.print-area *),
+.theme-dark main .border-slate-100:not(.print-area):not(.print-area *),
+.theme-dark header.border-slate-200 {
+  border-color: #334155 !important;
+}
+
+.theme-dark main .text-slate-900:not(.print-area):not(.print-area *),
+.theme-dark header .text-slate-900 {
+  color: #f8fafc !important;
+}
+
+.theme-dark main .text-slate-800:not(.print-area):not(.print-area *),
+.theme-dark main .text-slate-700:not(.print-area):not(.print-area *) {
+  color: #cbd5e1 !important;
+}
+
+.theme-dark main .text-slate-600:not(.print-area):not(.print-area *),
+.theme-dark main .text-slate-500:not(.print-area):not(.print-area *) {
+  color: #94a3b8 !important;
+}
+
+.theme-dark main input:not(.print-area *),
+.theme-dark main select:not(.print-area *),
+.theme-dark main textarea:not(.print-area *) {
+  background-color: #020617 !important;
+  color: #f8fafc !important;
+  border-color: #334155 !important;
+}
+
