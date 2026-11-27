@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
-import { Plus, Save, Sparkles, Trash2, Upload } from 'lucide-react';
+import { ChevronDown, Plus, Save, Sparkles, Trash2, Upload } from 'lucide-react';
 import { GradeEntry, GradeRowMarker, PortalDatabase, Student } from '../types';
 import {
   exportDatasetToPdf,
@@ -58,9 +58,9 @@ export function GradesView({
   }, [settings.masterClasses, students]);
 
   // Section 1 state
-  const [selectedClass, setSelectedClass] = useState<string>(classOptions[0] || '');
-  const [selectedSubject, setSelectedSubject] = useState<string>(settings.masterSubjects[0] || '');
-  const [selectedExamType, setSelectedExamType] = useState<string>(settings.masterExamTypes[0] || '');
+  const [selectedClass, setSelectedClass] = useState<string>('');
+  const [selectedSubject, setSelectedSubject] = useState<string>('');
+  const [selectedExamType, setSelectedExamType] = useState<string>('');
   const [selectedExamStudentIds, setSelectedExamStudentIds] = useState<Set<string>>(new Set());
   const [showImportBox, setShowImportBox] = useState(false);
   const [pasteText, setPasteText] = useState('');
@@ -71,23 +71,24 @@ export function GradesView({
   >({});
 
   // Section 2 state (Matrix)
-  const [matrixClass, setMatrixClass] = useState<string>(classOptions[0] || '');
-  const [matrixSubject, setMatrixSubject] = useState<string>(settings.masterSubjects[0] || '');
+  const [matrixClass, setMatrixClass] = useState<string>('');
+  const [matrixSubject, setMatrixSubject] = useState<string>('');
   const [matrixDraft, setMatrixDraft] = useState<Record<string, string>>({});
   const [matrixDirty, setMatrixDirty] = useState(false);
   const [selectedMatrixIds, setSelectedMatrixIds] = useState<Set<string>>(new Set());
   const [detailStudent, setDetailStudent] = useState<Student | null>(null);
+  const [matrixExpanded, setMatrixExpanded] = useState(false);
 
-  useEffect(() => {
-    if (!selectedClass && classOptions.length > 0) setSelectedClass(classOptions[0]);
-    if (!matrixClass && classOptions.length > 0) setMatrixClass(classOptions[0]);
-  }, [classOptions, selectedClass, matrixClass]);
+  const hasExamSelection = Boolean(selectedClass && selectedSubject && selectedExamType);
+  const hasMatrixSelection = Boolean(matrixClass && matrixSubject);
 
   const studentsInClass = useMemo(
     () =>
-      students
-        .filter((s) => s.className === selectedClass)
-        .sort(compareStudentsByClassAndAbsent),
+      selectedClass
+        ? students
+            .filter((s) => s.className === selectedClass)
+            .sort(compareStudentsByClassAndAbsent)
+        : [],
     [students, selectedClass]
   );
 
@@ -222,9 +223,11 @@ export function GradesView({
   // Section 2: Matrix Students & Values
   const matrixStudents = useMemo(
     () =>
-      students
-        .filter((s) => s.className === matrixClass)
-        .sort(compareStudentsByClassAndAbsent),
+      matrixClass
+        ? students
+            .filter((s) => s.className === matrixClass)
+            .sort(compareStudentsByClassAndAbsent)
+        : [],
     [students, matrixClass]
   );
 
@@ -271,6 +274,10 @@ export function GradesView({
   };
 
   const handleSaveMatrix = () => {
+    if (!hasMatrixSelection) {
+      onToast('error', 'Pilih Kelas dan Mata Pelajaran terlebih dahulu.');
+      return;
+    }
     const now = new Date().toISOString();
     const payload: GradeEntry[] = [];
     matrixStudents.forEach((st) => {
@@ -610,6 +617,7 @@ export function GradesView({
               aria-label="Pilih kelas"
               className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
             >
+              <option value="">--Pilih Kelas--</option>
               {classOptions.map((c) => (
                 <option key={c} value={c}>
                   Kelas {c}
@@ -623,6 +631,7 @@ export function GradesView({
               aria-label="Pilih mata pelajaran"
               className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
             >
+              <option value="">--Pilih Mapel--</option>
               {settings.masterSubjects.map((s) => (
                 <option key={s} value={s}>
                   {s}
@@ -636,6 +645,7 @@ export function GradesView({
               aria-label="Pilih jenis ujian"
               className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
             >
+              <option value="">--Pilih Ujian--</option>
               {settings.masterExamTypes.map((ex) => (
                 <option key={ex} value={ex}>
                   {ex}
@@ -662,8 +672,15 @@ export function GradesView({
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={() => setShowImportBox((prev) => !prev)}
-                className="px-3 py-2 rounded-lg border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
+                onClick={() => {
+                  if (!hasExamSelection) {
+                    onToast('error', 'Pilih Kelas, Mata Pelajaran, dan Jenis Ujian terlebih dahulu.');
+                    return;
+                  }
+                  setShowImportBox((prev) => !prev);
+                }}
+                disabled={!hasExamSelection}
+                className="px-3 py-2 rounded-lg border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold transition-colors inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50"
               >
                 <Upload className="w-3.5 h-3.5" />
                 {showImportBox ? 'Tutup Impor' : 'Impor Nilai'}
@@ -671,7 +688,7 @@ export function GradesView({
               <button
                 type="button"
                 onClick={handleAutoKkm75}
-                disabled={studentsInClass.length === 0}
+                disabled={!hasExamSelection || studentsInClass.length === 0}
                 className="px-3 py-2 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800 text-xs font-semibold transition-colors inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50"
               >
                 <Sparkles className="w-3.5 h-3.5" />
@@ -680,7 +697,7 @@ export function GradesView({
               <button
                 type="button"
                 onClick={handleSaveExamGrades}
-                disabled={studentsInClass.length === 0}
+                disabled={!hasExamSelection || studentsInClass.length === 0}
                 className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs sm:text-sm font-semibold transition-colors inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50"
               >
                 <Save className="w-4 h-4" />
@@ -829,7 +846,13 @@ export function GradesView({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-slate-700">
-              {studentsInClass.length === 0 ? (
+              {!hasExamSelection ? (
+                <tr>
+                  <td colSpan={9} className="px-4 py-10 text-center text-sm text-slate-500">
+                    Silakan pilih Kelas, Mata Pelajaran, dan Jenis Ujian terlebih dahulu.
+                  </td>
+                </tr>
+              ) : studentsInClass.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="px-4 py-10 text-center text-sm text-slate-500">
                     Belum ada siswa di kelas {selectedClass}.
@@ -959,15 +982,42 @@ export function GradesView({
 
       {/* BAGIAN 2: RIWAYAT MATRIKS NILAI PER KELAS */}
       <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 space-y-3">
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-            <div>
-              <h2 className="text-base font-bold text-slate-900">2. Riwayat Matriks Nilai per Kelas</h2>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Leger nilai mendatar seluruh jenis ujian — edit nilai langsung di sel tabel dan simpan
-              </p>
-            </div>
+        <div
+          className={`px-5 py-4 space-y-3 ${
+            matrixExpanded ? 'border-b border-slate-200' : ''
+          }`}
+        >
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => setMatrixExpanded((prev) => !prev)}
+              aria-expanded={matrixExpanded}
+              className="flex items-center justify-between gap-3 text-left flex-1 min-w-0 group"
+            >
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-base font-bold text-slate-900 group-hover:text-indigo-700 transition-colors">
+                    2. Riwayat Matriks Nilai per Kelas
+                  </h2>
+                  <span className="text-xs text-slate-500">
+                    · {matrixClass || '-'} · {matrixSubject || '-'}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Leger nilai mendatar seluruh jenis ujian — edit nilai langsung di sel tabel dan simpan
+                </p>
+              </div>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 group-hover:bg-slate-100 text-xs font-semibold text-slate-700 whitespace-nowrap shrink-0 transition-colors">
+                <span>{matrixExpanded ? 'Ciutkan' : 'Tampilkan'}</span>
+                <ChevronDown
+                  className={`w-4 h-4 text-slate-500 transition-transform duration-150 ${
+                    matrixExpanded ? 'rotate-180' : ''
+                  }`}
+                />
+              </span>
+            </button>
 
+            {matrixExpanded && (
             <div className="flex flex-wrap items-center gap-2.5">
               <select
                 value={matrixClass}
@@ -975,6 +1025,7 @@ export function GradesView({
                 aria-label="Pilih kelas matriks nilai"
                 className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Kelas--</option>
                 {classOptions.map((c) => (
                   <option key={c} value={c}>
                     Kelas {c}
@@ -988,6 +1039,7 @@ export function GradesView({
                 aria-label="Pilih mata pelajaran matriks nilai"
                 className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Mapel--</option>
                 {settings.masterSubjects.map((s) => (
                   <option key={s} value={s}>
                     {s}
@@ -998,9 +1050,9 @@ export function GradesView({
               <button
                 type="button"
                 onClick={handleSaveMatrix}
-                disabled={!matrixDirty || matrixStudents.length === 0}
+                disabled={!matrixDirty || !hasMatrixSelection || matrixStudents.length === 0}
                 className={`px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-colors inline-flex items-center gap-1.5 whitespace-nowrap ${
-                  matrixDirty && matrixStudents.length > 0
+                  matrixDirty && hasMatrixSelection && matrixStudents.length > 0
                     ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
                     : 'bg-slate-100 text-slate-400 cursor-not-allowed'
                 }`}
@@ -1009,8 +1061,10 @@ export function GradesView({
                 Simpan Matriks
               </button>
             </div>
+            )}
           </div>
 
+          {matrixExpanded && (
           <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
             <span className="text-xs text-slate-500">
               {selectedMatrixIds.size > 0
@@ -1073,8 +1127,10 @@ export function GradesView({
               }}
             />
           </div>
+          )}
         </div>
 
+        {matrixExpanded && (
         <div className="overflow-x-auto max-h-[460px] table-scroll">
           <table className="w-full text-left border-collapse text-xs sm:text-sm">
             <thead className="sticky top-0 z-20 bg-slate-100 text-slate-700 text-xs font-semibold border-b border-slate-200">
@@ -1109,7 +1165,16 @@ export function GradesView({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-slate-700">
-              {matrixStudents.length === 0 ? (
+              {!hasMatrixSelection ? (
+                <tr>
+                  <td
+                    colSpan={5 + settings.masterExamTypes.length}
+                    className="px-4 py-10 text-center text-sm text-slate-500"
+                  >
+                    Silakan pilih Kelas dan Mata Pelajaran terlebih dahulu untuk melihat matriks nilai.
+                  </td>
+                </tr>
+              ) : matrixStudents.length === 0 ? (
                 <tr>
                   <td
                     colSpan={5 + settings.masterExamTypes.length}
@@ -1193,6 +1258,7 @@ export function GradesView({
             </tbody>
           </table>
         </div>
+        )}
       </section>
 
       <StudentDetailModal

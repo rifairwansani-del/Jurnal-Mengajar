@@ -207,7 +207,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       : classOptions
   );
   const [subjectFilter, setSubjectFilter] = useState<string>(
-    () => savedPrefs?.subjectFilter || 'ALL'
+    () => savedPrefs?.subjectFilter ?? ''
   );
   const [startDate, setStartDate] = useState<string>(() => savedPrefs?.startDate || '');
   const [endDate, setEndDate] = useState<string>(() => savedPrefs?.endDate || '');
@@ -235,10 +235,12 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   const [orientation, setOrientation] = useState<PaperOrientation>(
     () => savedPrefs?.orientation || 'landscape'
   );
-  const [paperSize, setPaperSize] = useState<PaperSizeId>(() => savedPrefs?.paperSize || 'A4');
-  const [fontFamily, setFontFamily] = useState<PrintFontFamily>(
+  const [paperSize, setPaperSize] = useState<PaperSizeId | ''>(() => savedPrefs?.paperSize || 'A4');
+  const [fontFamily, setFontFamily] = useState<PrintFontFamily | ''>(
     () => savedPrefs?.fontFamily || 'Times New Roman'
   );
+  const effectivePaperSize: PaperSizeId = paperSize || 'A4';
+  const effectiveFontFamily: PrintFontFamily = fontFamily || 'Times New Roman';
   const [sigPos, setSigPos] = useState<SignaturePositionSettings>(
     () => settings.signaturePosition
   );
@@ -253,6 +255,9 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   );
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [isExportingWord, setIsExportingWord] = useState(false);
+  const [filterPanelExpanded, setFilterPanelExpanded] = useState(false);
+  const [sigPosExpanded, setSigPosExpanded] = useState(false);
+  const [kopLogoExpanded, setKopLogoExpanded] = useState(false);
 
   const prevSettingsRef = useRef(settings);
   const prevClassOptionsRef = useRef<string[]>(classOptions);
@@ -398,7 +403,11 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   );
 
   const activeSigner = useMemo(
-    () => resolveActiveSigner(db, signerAccountId || undefined),
+    () =>
+      resolveActiveSigner(
+        db,
+        signerAccountId && signerAccountId !== '__AUTO__' ? signerAccountId : undefined
+      ),
     [db, signerAccountId]
   );
 
@@ -499,6 +508,18 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   ]);
 
   const handleSavePrintSettings = () => {
+    if (!paperSize) {
+      onToast('error', 'Pilih Ukuran Kertas terlebih dahulu.');
+      return;
+    }
+    if (!fontFamily) {
+      onToast('error', 'Pilih Jenis Huruf Cetak terlebih dahulu.');
+      return;
+    }
+    if (!sigPos.preset) {
+      onToast('error', 'Pilih Posisi Blok Pengesahan terlebih dahulu.');
+      return;
+    }
     const safeLeftSize = Math.max(28, Math.min(150, kopLeftSize));
     const safeRightSize = Math.max(28, Math.min(150, kopRightSize));
     const safeLineSpacing = normalizeKopLineSpacing(kopLineSpacing);
@@ -516,10 +537,10 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
         selectedReportTypes,
         selectedChartTypes,
         selectedClasses,
-        subjectFilter,
+        subjectFilter: subjectFilter || 'ALL',
         startDate,
         endDate,
-        signerAccountId,
+        signerAccountId: signerAccountId === '__AUTO__' ? '' : signerAccountId,
         showKop,
         showTtdKepsek,
         showTtdGuru,
@@ -584,7 +605,11 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     }
   };
 
-  const handlePresetChange = (preset: SignatureLayoutPreset) => {
+  const handlePresetChange = (preset: SignatureLayoutPreset | '') => {
+    if (!preset) {
+      updateSigPos({ preset: '' as unknown as SignatureLayoutPreset });
+      return;
+    }
     if (preset === 'bebas') {
       updateSigPos({ preset: 'bebas' });
       onToast('info', 'Mode posisi bebas tanda tangan diaktifkan.');
@@ -627,9 +652,9 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       styleEl.id = styleId;
       document.head.appendChild(styleEl);
     }
-    const cfg = PAPER_SIZE_CONFIG[paperSize];
+    const cfg = PAPER_SIZE_CONFIG[effectivePaperSize];
     styleEl.textContent = `@media print { @page { size: ${cfg.cssPageSize} ${orientation}; margin: 12mm; } }`;
-  }, [orientation, paperSize]);
+  }, [orientation, effectivePaperSize]);
 
   // Free drag handler inside signature zone (always active even from preset layout)
   const handleSigPointerDown = (
@@ -853,7 +878,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           return false;
         }
         if (!clsSet.has(j.className)) return false;
-        if (subjectFilter !== 'ALL' && j.subject !== subjectFilter) return false;
+        if (subjectFilter && subjectFilter !== 'ALL' && j.subject !== subjectFilter) return false;
         if (startDate && j.date < startDate) return false;
         if (endDate && j.date > endDate) return false;
         return true;
@@ -872,7 +897,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   ]);
 
   const activeGradeSubjects = useMemo(() => {
-    if (subjectFilter !== 'ALL') return [subjectFilter];
+    if (subjectFilter && subjectFilter !== 'ALL') return [subjectFilter];
     return settings.masterSubjects;
   }, [subjectFilter, settings.masterSubjects]);
 
@@ -1311,7 +1336,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   }, [selectedReportTypes]);
 
   const periodSubtitle = `Tahun Ajaran ${session.academicYear} · Semester ${session.semester} · Mata Pelajaran: ${
-    subjectFilter === 'ALL' ? 'Semua Mata Pelajaran' : subjectFilter
+    !subjectFilter || subjectFilter === 'ALL' ? 'Semua Mata Pelajaran' : subjectFilter
   }`;
 
   const includeCharts = selectedReportTypes.includes('charts');
@@ -1321,13 +1346,13 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     return buildReportCharts({
       selectedChartTypes,
       selectedClasses,
-      subjectFilter,
+      subjectFilter: subjectFilter || 'ALL',
       students,
       journals: filteredJournals,
       grades,
       academicYear: session.academicYear,
       semester: session.semester,
-      fontFamily,
+      fontFamily: effectiveFontFamily,
     });
   }, [
     includeCharts,
@@ -1339,7 +1364,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     grades,
     session.academicYear,
     session.semester,
-    fontFamily,
+    effectiveFontFamily,
   ]);
 
   const dateRangeLabel =
@@ -1517,7 +1542,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
         activeGradeSubjects.forEach((subj) => {
           const { rows } = getGradeBlockForClassAndSubject(cls, subj);
           const hasAnyScore = rows.some((r) => r.avg !== null);
-          if (!hasAnyScore && subjectFilter === 'ALL') return;
+          if (!hasAnyScore && (!subjectFilter || subjectFilter === 'ALL')) return;
           const header = [
             'No',
             'NIS',
@@ -1545,7 +1570,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       selectedClasses.forEach((cls) => {
         activeGradeSubjects.forEach((subj) => {
           const rem = getRemedialDataForClassAndSubject(cls, subj);
-          if (rem.assessedCount === 0 && subjectFilter === 'ALL') return;
+          if (rem.assessedCount === 0 && (!subjectFilter || subjectFilter === 'ALL')) return;
           const header = [
             'No',
             'NIS',
@@ -1709,8 +1734,8 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
         title: reportTitle,
         filename: `Laporan_E-Guru_${reportSlug}_${getTodayISO()}.doc`,
         orientation,
-        cssPageSize: PAPER_SIZE_CONFIG[paperSize].cssPageSize,
-        fontFamily,
+        cssPageSize: PAPER_SIZE_CONFIG[effectivePaperSize].cssPageSize,
+        fontFamily: effectiveFontFamily,
       });
       onToast('success', 'Dokumen Word (.doc) persis pratinjau berhasil diunduh.');
     } catch {
@@ -1728,7 +1753,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     }
     setIsGeneratingPdf(true);
     try {
-      const paperCfg = PAPER_SIZE_CONFIG[paperSize];
+      const paperCfg = PAPER_SIZE_CONFIG[effectivePaperSize];
       const doc = new jsPDF({
         orientation,
         unit: 'mm',
@@ -1736,7 +1761,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       });
 
       const pdfFont =
-        fontFamily === 'Times New Roman' || fontFamily === 'Georgia'
+        effectiveFontFamily === 'Times New Roman' || effectiveFontFamily === 'Georgia'
           ? 'times'
           : 'helvetica';
       doc.setFont(pdfFont, 'normal');
@@ -2048,7 +2073,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           activeGradeSubjects.forEach((subj) => {
             const { rows } = getGradeBlockForClassAndSubject(cls, subj);
             const hasAnyScore = rows.some((r) => r.avg !== null);
-            if (!hasAnyScore && subjectFilter === 'ALL') return;
+            if (!hasAnyScore && (!subjectFilter || subjectFilter === 'ALL')) return;
 
             drawSectionTitle(`Rekap Nilai Mapel — Kelas ${cls} (${subj})`);
             autoTable(doc, {
@@ -2078,7 +2103,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
         selectedClasses.forEach((cls) => {
           activeGradeSubjects.forEach((subj) => {
             const rem = getRemedialDataForClassAndSubject(cls, subj);
-            if (rem.assessedCount === 0 && subjectFilter === 'ALL') return;
+            if (rem.assessedCount === 0 && (!subjectFilter || subjectFilter === 'ALL')) return;
             const dayaLabel = rem.dayaSerap !== null ? `${rem.dayaSerap.toFixed(0)}%` : '-';
             drawSectionTitle(
               `Ketuntasan & Remedial (< KKM 75) — ${cls} (${subj}) · Daya Serap: ${dayaLabel} (${rem.tuntasCount}/${rem.assessedCount})`
@@ -2264,7 +2289,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           doc.text('Belum ada jenis diagram grafik yang dipilih.', marginX, cursorY + 4);
           cursorY += 10;
         } else {
-          const cols = paperSize === 'A5' && orientation === 'portrait' ? 1 : 2;
+          const cols = effectivePaperSize === 'A5' && orientation === 'portrait' ? 1 : 2;
           const gapMm = 4;
           const cardW = (usableWidth - gapMm * (cols - 1)) / cols;
           const imgW = cardW - 5;
@@ -2481,10 +2506,10 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   const includeStudentsRoster = selectedReportTypes.includes('students_roster');
   const includeTeacherActivity = selectedReportTypes.includes('teacher_activity');
 
-  const activePaperCfg = PAPER_SIZE_CONFIG[paperSize];
+  const activePaperCfg = PAPER_SIZE_CONFIG[effectivePaperSize];
   const activePaperWidthMm =
     orientation === 'landscape' ? activePaperCfg.heightMm : activePaperCfg.widthMm;
-  const chartCols = paperSize === 'A5' && orientation === 'portrait' ? 1 : 2;
+  const chartCols = effectivePaperSize === 'A5' && orientation === 'portrait' ? 1 : 2;
 
   const principalStampImage = resolvePrincipalStampImage(db);
   const stampOnKepsek = sigPos.showStamp;
@@ -2687,16 +2712,36 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   return (
     <div className="space-y-6">
       {/* Control Panel (Hidden on Print) */}
-      <section className="no-print bg-white border border-slate-200 rounded-xl p-5 space-y-5">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 border-b border-slate-200 pb-4">
-          <div>
-            <h2 className="text-base font-bold text-slate-900">
-              Filter & Pengaturan Cetak Laporan Resmi
-            </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Hasil cetak, PDF, dan Word disesuaikan 1:1 dengan pratinjau dokumen, TTD pemilik akun, stempel sekolah & posisi pengesahan
-            </p>
-          </div>
+      <section className={`no-print bg-white border border-slate-200 rounded-xl p-5 ${filterPanelExpanded ? 'space-y-5' : ''}`}>
+        <div className={`flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 ${filterPanelExpanded ? 'border-b border-slate-200 pb-4' : ''}`}>
+          <button
+            type="button"
+            onClick={() => setFilterPanelExpanded((prev) => !prev)}
+            aria-expanded={filterPanelExpanded}
+            className="flex items-center justify-between lg:justify-start gap-3 text-left group min-w-0"
+          >
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base font-bold text-slate-900 group-hover:text-indigo-700 transition-colors">
+                  Filter &amp; Pengaturan Cetak Laporan Resmi
+                </h2>
+                <span className="text-[11px] font-medium text-slate-500">
+                  · {selectedReportTypes.length} laporan · {selectedClasses.length} kelas · {effectivePaperSize}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Hasil cetak, PDF, dan Word disesuaikan 1:1 dengan pratinjau dokumen, TTD pemilik akun, stempel sekolah &amp; posisi pengesahan
+              </p>
+            </div>
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 group-hover:bg-slate-100 text-xs font-semibold text-slate-700 whitespace-nowrap shrink-0 transition-colors">
+              <span>{filterPanelExpanded ? 'Ciutkan' : 'Tampilkan'}</span>
+              <ChevronDown
+                className={`w-4 h-4 text-slate-500 transition-transform duration-150 ${
+                  filterPanelExpanded ? 'rotate-180' : ''
+                }`}
+              />
+            </span>
+          </button>
 
           {/* Action & Output Buttons */}
           <div className="flex flex-wrap items-center gap-2">
@@ -2758,6 +2803,8 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           </div>
         </div>
 
+        {filterPanelExpanded && (
+          <div className="space-y-5">
         {/* Row 1 Filters */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
           <div className="relative" ref={reportDropdownRef}>
@@ -2771,7 +2818,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             >
               <span className="truncate text-slate-800">
                 {selectedReportTypes.length === 0
-                  ? 'Tidak ada laporan dipilih'
+                  ? '--Pilih Jenis Laporan--'
                   : selectedReportTypes.length === REPORT_TYPE_OPTIONS.length
                   ? `Semua Laporan (${REPORT_TYPE_OPTIONS.length})`
                   : REPORT_TYPE_OPTIONS.filter((o) => selectedReportTypes.includes(o.id))
@@ -2802,6 +2849,20 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                   </button>
                 </div>
                 <div className="max-h-72 overflow-y-auto space-y-1 pt-1 pr-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedReportTypes([]);
+                      setReportDropdownOpen(false);
+                    }}
+                    className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                      selectedReportTypes.length === 0
+                        ? 'bg-indigo-50 text-indigo-700 font-semibold'
+                        : 'text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    --Pilih Jenis Laporan--
+                  </button>
                   {REPORT_TYPE_OPTIONS.map((opt) => (
                     <label
                       key={opt.id}
@@ -2846,7 +2907,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             >
               <span className="truncate text-slate-800">
                 {selectedClasses.length === 0
-                  ? 'Tidak ada kelas dipilih'
+                  ? '--Pilih Kelas--'
                   : selectedClasses.length === classOptions.length
                   ? `Semua Kelas (${classOptions.length})`
                   : selectedClasses.join(', ')}
@@ -2873,6 +2934,20 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                   </button>
                 </div>
                 <div className="max-h-48 overflow-y-auto space-y-0.5 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedClasses([]);
+                      setClassDropdownOpen(false);
+                    }}
+                    className={`w-full text-left px-2.5 py-1.5 rounded-lg text-sm transition-colors ${
+                      selectedClasses.length === 0
+                        ? 'bg-indigo-50 text-indigo-700 font-semibold'
+                        : 'text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    --Pilih Kelas--
+                  </button>
                   {classOptions.map((cls) => (
                     <label
                       key={cls}
@@ -2902,6 +2977,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
               onChange={(e) => setSubjectFilter(e.target.value)}
               className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
             >
+              <option value="">--Pilih Mapel--</option>
               <option value="ALL">Semua Mata Pelajaran</option>
               {settings.masterSubjects.map((s) => (
                 <option key={s} value={s}>
@@ -2918,9 +2994,10 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             <select
               id="rep-paper"
               value={paperSize}
-              onChange={(e) => setPaperSize(e.target.value as PaperSizeId)}
+              onChange={(e) => setPaperSize(e.target.value as PaperSizeId | '')}
               className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
             >
+              <option value="">--Pilih Ukuran Kertas--</option>
               {(Object.keys(PAPER_SIZE_CONFIG) as PaperSizeId[]).map((key) => (
                 <option key={key} value={key}>
                   {PAPER_SIZE_CONFIG[key].label}
@@ -2936,9 +3013,10 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             <select
               id="rep-font"
               value={fontFamily}
-              onChange={(e) => setFontFamily(e.target.value as PrintFontFamily)}
+              onChange={(e) => setFontFamily(e.target.value as PrintFontFamily | '')}
               className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
             >
+              <option value="">--Pilih Jenis Huruf--</option>
               {FONT_OPTIONS.map((f) => (
                 <option key={f} value={f} style={{ fontFamily: f }}>
                   {f}
@@ -3127,7 +3205,8 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                 onChange={(e) => setSignerAccountId(e.target.value)}
                 className="w-full px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
-                <option value="">Otomatis Sesuai Akun Login ({activeSigner.name})</option>
+                <option value="">--Pilih Penandatangan--</option>
+                <option value="__AUTO__">Otomatis Sesuai Akun Login ({activeSigner.name})</option>
                 {accounts.map((acc) => (
                   <option key={acc.id} value={acc.id}>
                     {acc.name} — {acc.role}
@@ -3144,9 +3223,10 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
               <select
                 id="rep-sig-preset"
                 value={sigPos.preset}
-                onChange={(e) => handlePresetChange(e.target.value as SignatureLayoutPreset)}
+                onChange={(e) => handlePresetChange(e.target.value as SignatureLayoutPreset | '')}
                 className="w-full px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Posisi Blok--</option>
                 {PRESET_OPTIONS.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.label}
@@ -3226,67 +3306,90 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
 
           <div className="bg-indigo-50/70 border border-indigo-200 rounded-xl p-3.5 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <p className="text-xs font-semibold text-indigo-900">
-                  Posisi & Ukuran Bebas Gambar TTD / Stempel
-                </p>
-                <p className="text-[11px] text-indigo-700/80 mt-0.5">
-                  Seret gambar TTD / Stempel langsung di pratinjau bawah untuk memindahkan posisi, atau seret titik sudut kanan bawah gambar untuk memperbesar/memperkecil.
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    updateSigPos({
-                      principalSignatureSize: 60,
-                      teacherSignatureSize: 60,
-                      stampSize: 70,
-                    });
-                    onToast('info', 'Ukuran gambar TTD & stempel dikembalikan ke standar.');
-                  }}
-                  className="px-2.5 py-1 rounded-md bg-white border border-indigo-200 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
-                >
-                  Reset Ukuran
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    updateSigPos({
-                      principalSigOffsetX: 0,
-                      principalSigOffsetY: 0,
-                      teacherSigOffsetX: 0,
-                      teacherSigOffsetY: 0,
-                      stampOffsetX: 0,
-                      stampOffsetY: 0,
-                    });
-                    onToast('info', 'Posisi offset gambar TTD & stempel direset.');
-                  }}
-                  className="px-2.5 py-1 rounded-md bg-white border border-indigo-200 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
-                >
-                  Reset Posisi Gambar
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    updateSigPos({
-                      preset: 'bebas',
-                      principalX: 4,
-                      principalY: 0,
-                      teacherX: 62,
-                      teacherY: 0,
-                    });
-                    onToast('info', 'Posisi blok tanda tangan direset ke standar.');
-                  }}
-                  className="px-2.5 py-1 rounded-md bg-white border border-indigo-200 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
-                >
-                  Reset Posisi Blok
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => setSigPosExpanded((prev) => !prev)}
+                aria-expanded={sigPosExpanded}
+                className="flex items-center justify-between gap-3 text-left flex-1 min-w-0 group"
+              >
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-semibold text-indigo-900 group-hover:text-indigo-700 transition-colors">
+                      Posisi &amp; Ukuran Bebas Gambar TTD / Stempel
+                    </span>
+                    <span className="text-[11px] text-indigo-700/80 tabular-nums">
+                      · TTD Kepsek {kepsekSigSizePx}px · TTD Guru {guruSigSizePx}px · Stempel {stampSizePx}px
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-indigo-700/80 mt-0.5">
+                    Seret gambar TTD / Stempel langsung di pratinjau bawah untuk memindahkan posisi, atau seret titik sudut kanan bawah gambar untuk memperbesar/memperkecil.
+                  </p>
+                </div>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-indigo-200 bg-white group-hover:bg-indigo-100/70 text-xs font-semibold text-indigo-700 whitespace-nowrap shrink-0 transition-colors">
+                  <span>{sigPosExpanded ? 'Ciutkan' : 'Tampilkan'}</span>
+                  <ChevronDown
+                    className={`w-4 h-4 text-indigo-600 transition-transform duration-150 ${
+                      sigPosExpanded ? 'rotate-180' : ''
+                    }`}
+                  />
+                </span>
+              </button>
             </div>
 
-            {/* Quick layer focus for overlapping stamp & signatures */}
-            <div className="flex flex-wrap items-center gap-2 text-xs bg-white/70 border border-indigo-100 rounded-lg px-2.5 py-1.5">
+            {sigPosExpanded && (
+              <>
+                <div className="flex flex-wrap items-center justify-end gap-1.5 pt-2 border-t border-indigo-200/70">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateSigPos({
+                        principalSignatureSize: 60,
+                        teacherSignatureSize: 60,
+                        stampSize: 70,
+                      });
+                      onToast('info', 'Ukuran gambar TTD & stempel dikembalikan ke standar.');
+                    }}
+                    className="px-2.5 py-1 rounded-md bg-white border border-indigo-200 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
+                  >
+                    Reset Ukuran
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateSigPos({
+                        principalSigOffsetX: 0,
+                        principalSigOffsetY: 0,
+                        teacherSigOffsetX: 0,
+                        teacherSigOffsetY: 0,
+                        stampOffsetX: 0,
+                        stampOffsetY: 0,
+                      });
+                      onToast('info', 'Posisi offset gambar TTD & stempel direset.');
+                    }}
+                    className="px-2.5 py-1 rounded-md bg-white border border-indigo-200 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
+                  >
+                    Reset Posisi Gambar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateSigPos({
+                        preset: 'bebas',
+                        principalX: 4,
+                        principalY: 0,
+                        teacherX: 62,
+                        teacherY: 0,
+                      });
+                      onToast('info', 'Posisi blok tanda tangan direset ke standar.');
+                    }}
+                    className="px-2.5 py-1 rounded-md bg-white border border-indigo-200 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
+                  >
+                    Reset Posisi Blok
+                  </button>
+                </div>
+
+                {/* Quick layer focus for overlapping stamp & signatures */}
+                <div className="flex flex-wrap items-center gap-2 text-xs bg-white/70 border border-indigo-100 rounded-lg px-2.5 py-1.5">
               <span className="font-semibold text-slate-600">Pilih Objek Aktif di Pratinjau:</span>
               <button
                 type="button"
@@ -3755,29 +3858,55 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                 </div>
               </div>
             </div>
+              </>
+            )}
           </div>
 
           {showKop && (
             <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-xs font-semibold text-slate-800">
-                  Ukuran Logo &amp; Spasi Baris Kop Surat Dinas
-                </span>
                 <button
                   type="button"
-                  onClick={() => {
-                    setKopLeftSize(72);
-                    setKopRightSize(72);
-                    setKopLineSpacing(DEFAULT_KOP_LINE_SPACING);
-                    onToast('info', 'Ukuran logo (72px) & spasi baris kop surat (1.25x) dikembalikan ke standar.');
-                  }}
-                  className="px-2.5 py-1 rounded-md border border-slate-200 bg-white hover:bg-slate-100 text-[11px] font-semibold text-slate-600 inline-flex items-center gap-1"
+                  onClick={() => setKopLogoExpanded((prev) => !prev)}
+                  aria-expanded={kopLogoExpanded}
+                  className="flex items-center justify-between gap-3 text-left flex-1 min-w-0 group"
                 >
-                  <RotateCcw className="w-3 h-3" />
-                  Reset Logo &amp; Spasi
+                  <div className="min-w-0 flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-semibold text-slate-800 group-hover:text-indigo-700 transition-colors">
+                      Ukuran Logo &amp; Spasi Baris Kop Surat Dinas
+                    </span>
+                    <span className="text-[11px] text-slate-500 tabular-nums">
+                      · Kiri {kopLeftSize}px · Kanan {kopRightSize}px · Spasi {kopLineSpacing.toFixed(2)}x
+                    </span>
+                  </div>
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-slate-200 bg-white group-hover:bg-slate-100 text-xs font-semibold text-slate-700 whitespace-nowrap shrink-0 transition-colors">
+                    <span>{kopLogoExpanded ? 'Ciutkan' : 'Tampilkan'}</span>
+                    <ChevronDown
+                      className={`w-4 h-4 text-slate-500 transition-transform duration-150 ${
+                        kopLogoExpanded ? 'rotate-180' : ''
+                      }`}
+                    />
+                  </span>
                 </button>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+              {kopLogoExpanded && (
+                <>
+                  <div className="flex justify-end pt-2 border-t border-slate-200/80">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setKopLeftSize(72);
+                        setKopRightSize(72);
+                        setKopLineSpacing(DEFAULT_KOP_LINE_SPACING);
+                        onToast('info', 'Ukuran logo (72px) & spasi baris kop surat (1.25x) dikembalikan ke standar.');
+                      }}
+                      className="px-2.5 py-1 rounded-md border border-slate-200 bg-white hover:bg-slate-100 text-[11px] font-semibold text-slate-600 inline-flex items-center gap-1"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      Reset Logo &amp; Spasi
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
                 <div className="bg-white rounded-lg border border-slate-200 p-2.5 space-y-1.5">
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-semibold text-slate-700 tabular-nums">
@@ -3931,6 +4060,8 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                   />
                 </div>
               </div>
+                </>
+              )}
             </div>
           )}
 
@@ -3971,6 +4102,8 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             </div>
           </div>
         </div>
+          </div>
+        )}
       </section>
 
       {/* Real-Time Document Preview (Exact 1:1 source for Print, PDF & Word) */}
@@ -3981,7 +4114,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             width: `${activePaperWidthMm}mm`,
             minWidth: `${activePaperWidthMm}mm`,
             padding: '12mm',
-            fontFamily: `"${fontFamily}", serif`,
+            fontFamily: `"${effectiveFontFamily}", serif`,
             backgroundColor: '#ffffff',
             color: '#000000',
           }}
@@ -4251,7 +4384,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                 activeGradeSubjects.map((subj) => {
                   const { rows } = getGradeBlockForClassAndSubject(cls, subj);
                   const hasAnyScore = rows.some((r) => r.avg !== null);
-                  if (!hasAnyScore && subjectFilter === 'ALL') return null;
+                  if (!hasAnyScore && (!subjectFilter || subjectFilter === 'ALL')) return null;
 
                   return (
                     <div key={`${cls}-${subj}`} style={{ marginBottom: '18px' }}>
@@ -4485,7 +4618,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
               {selectedClasses.map((cls) =>
                 activeGradeSubjects.map((subj) => {
                   const rem = getRemedialDataForClassAndSubject(cls, subj);
-                  if (rem.assessedCount === 0 && subjectFilter === 'ALL') return null;
+                  if (rem.assessedCount === 0 && (!subjectFilter || subjectFilter === 'ALL')) return null;
 
                   return (
                     <div key={`rem-${cls}-${subj}`} style={{ marginBottom: '18px' }}>

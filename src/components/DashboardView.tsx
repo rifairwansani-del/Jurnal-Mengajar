@@ -11,6 +11,7 @@ import {
   Copy,
   Pencil,
   Trash2,
+  ChevronDown,
 } from 'lucide-react';
 import { JournalEntry, MenuId, PortalDatabase } from '../types';
 import {
@@ -53,6 +54,8 @@ export function DashboardView({
   const { students, journals, grades, settings, session } = db;
   const theme = PORTAL_THEMES[settings.themeId] || PORTAL_THEMES['slate-indigo'];
   const [selectedLatestIds, setSelectedLatestIds] = useState<Set<string>>(new Set());
+  const [classSummaryExpanded, setClassSummaryExpanded] = useState(false);
+  const [latestJournalsExpanded, setLatestJournalsExpanded] = useState(false);
 
   const activeJournals = useMemo(
     () =>
@@ -481,197 +484,260 @@ export function DashboardView({
 
       {/* Tabel Rekap Kehadiran & Nilai per Kelas */}
       <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-bold text-slate-900">Rekap Kehadiran & Nilai per Kelas</h3>
-            <p className="text-xs text-slate-500">Ringkasan siswa, pertemuan KBM, presensi, dan nilai rata-rata</p>
-          </div>
-          <TableExportToolbar
-            onExportXlsx={() => {
-              const { headers, rows } = buildClassSummaryDataset();
-              exportRowsToXlsx('Rekap Kelas', headers, rows, `Rekap_Kelas_${getTodayISO()}.xlsx`);
-              onToast('success', 'Rekap kelas diekspor ke XLSX.');
-            }}
-            onExportXls={() => {
-              const { headers, rows } = buildClassSummaryDataset();
-              exportRowsToXls('Rekap Kelas', headers, rows, `Rekap_Kelas_${getTodayISO()}.xls`);
-              onToast('success', 'Rekap kelas diekspor ke XLS.');
-            }}
-            onExportWord={(cfg) => {
-              const { headers, rows } = buildClassSummaryDataset();
-              exportDatasetToWordDoc({
-                db,
-                title: 'REKAP KEHADIRAN & NILAI PER KELAS',
-                subtitle: `TA ${session.academicYear} · Semester ${session.semester}`,
-                headers,
-                rows,
-                filename: `Rekap_Kelas_${getTodayISO()}.doc`,
-                orientation: cfg.orientation,
-                paperSize: cfg.paperSize,
-              });
-              onToast('success', 'Dokumen Word (.doc) Rekap Kelas diunduh.');
-            }}
-            onExportPdf={(cfg) => {
-              const { headers, rows } = buildClassSummaryDataset();
-              exportDatasetToPdf({
-                db,
-                title: 'REKAP KEHADIRAN & NILAI PER KELAS',
-                subtitle: `TA ${session.academicYear} · Semester ${session.semester}`,
-                headers,
-                rows,
-                filename: `Rekap_Kelas_${getTodayISO()}.pdf`,
-                orientation: cfg.orientation,
-                paperSize: cfg.paperSize,
-              });
-              onToast('success', 'Dokumen PDF Rekap Kelas diunduh.');
-            }}
-            onPrint={(cfg) => {
-              const { headers, rows } = buildClassSummaryDataset();
-              printDatasetExact({
-                db,
-                title: 'REKAP KEHADIRAN & NILAI PER KELAS',
-                subtitle: `TA ${session.academicYear} · Semester ${session.semester}`,
-                headers,
-                rows,
-                orientation: cfg.orientation,
-                paperSize: cfg.paperSize,
-              });
-              onToast('info', 'Menyiapkan tampilan cetak rekap kelas...');
-            }}
-          />
+        <div
+          className={`px-5 py-4 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 ${
+            classSummaryExpanded ? 'border-b border-slate-200' : ''
+          }`}
+        >
+          <button
+            type="button"
+            onClick={() => setClassSummaryExpanded((prev) => !prev)}
+            aria-expanded={classSummaryExpanded}
+            className="flex items-center justify-between gap-3 text-left flex-1 min-w-0 group"
+          >
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-bold text-slate-900 group-hover:text-indigo-700 transition-colors">
+                  Rekap Kehadiran &amp; Nilai per Kelas
+                </h3>
+                <span className="text-xs text-slate-500 tabular-nums">
+                  · {classSummaries.length} kelas
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Ringkasan siswa, pertemuan KBM, presensi, dan nilai rata-rata
+              </p>
+            </div>
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 group-hover:bg-slate-100 text-xs font-semibold text-slate-700 whitespace-nowrap shrink-0 transition-colors">
+              <span>{classSummaryExpanded ? 'Ciutkan' : 'Tampilkan'}</span>
+              <ChevronDown
+                className={`w-4 h-4 text-slate-500 transition-transform duration-150 ${
+                  classSummaryExpanded ? 'rotate-180' : ''
+                }`}
+              />
+            </span>
+          </button>
+          {classSummaryExpanded && (
+            <TableExportToolbar
+              onExportXlsx={() => {
+                const { headers, rows } = buildClassSummaryDataset();
+                exportRowsToXlsx('Rekap Kelas', headers, rows, `Rekap_Kelas_${getTodayISO()}.xlsx`);
+                onToast('success', 'Rekap kelas diekspor ke XLSX.');
+              }}
+              onExportXls={() => {
+                const { headers, rows } = buildClassSummaryDataset();
+                exportRowsToXls('Rekap Kelas', headers, rows, `Rekap_Kelas_${getTodayISO()}.xls`);
+                onToast('success', 'Rekap kelas diekspor ke XLS.');
+              }}
+              onExportWord={(cfg) => {
+                const { headers, rows } = buildClassSummaryDataset();
+                exportDatasetToWordDoc({
+                  db,
+                  title: 'REKAP KEHADIRAN & NILAI PER KELAS',
+                  subtitle: `TA ${session.academicYear} · Semester ${session.semester}`,
+                  headers,
+                  rows,
+                  filename: `Rekap_Kelas_${getTodayISO()}.doc`,
+                  orientation: cfg.orientation,
+                  paperSize: cfg.paperSize,
+                });
+                onToast('success', 'Dokumen Word (.doc) Rekap Kelas diunduh.');
+              }}
+              onExportPdf={(cfg) => {
+                const { headers, rows } = buildClassSummaryDataset();
+                exportDatasetToPdf({
+                  db,
+                  title: 'REKAP KEHADIRAN & NILAI PER KELAS',
+                  subtitle: `TA ${session.academicYear} · Semester ${session.semester}`,
+                  headers,
+                  rows,
+                  filename: `Rekap_Kelas_${getTodayISO()}.pdf`,
+                  orientation: cfg.orientation,
+                  paperSize: cfg.paperSize,
+                });
+                onToast('success', 'Dokumen PDF Rekap Kelas diunduh.');
+              }}
+              onPrint={(cfg) => {
+                const { headers, rows } = buildClassSummaryDataset();
+                printDatasetExact({
+                  db,
+                  title: 'REKAP KEHADIRAN & NILAI PER KELAS',
+                  subtitle: `TA ${session.academicYear} · Semester ${session.semester}`,
+                  headers,
+                  rows,
+                  orientation: cfg.orientation,
+                  paperSize: cfg.paperSize,
+                });
+                onToast('info', 'Menyiapkan tampilan cetak rekap kelas...');
+              }}
+            />
+          )}
         </div>
-        <div className="overflow-x-auto max-h-[380px] table-scroll">
-          <table className="w-full text-left border-collapse text-sm">
-            <thead className="sticky top-0 z-10 bg-slate-100 text-slate-700 text-xs font-semibold border-b border-slate-200">
-              <tr>
-                <th className="px-4 py-3 whitespace-nowrap">Kelas</th>
-                <th className="px-4 py-3 text-right whitespace-nowrap">Siswa</th>
-                <th className="px-4 py-3 text-right whitespace-nowrap">Jurnal</th>
-                <th className="px-4 py-3 text-right whitespace-nowrap">H</th>
-                <th className="px-4 py-3 text-right whitespace-nowrap">S</th>
-                <th className="px-4 py-3 text-right whitespace-nowrap">I</th>
-                <th className="px-4 py-3 text-right whitespace-nowrap">A</th>
-                <th className="px-4 py-3 text-right whitespace-nowrap">D</th>
-                <th className="px-4 py-3 text-right whitespace-nowrap">% Hadir</th>
-                <th className="px-4 py-3 text-right whitespace-nowrap">Rata-rata Nilai</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 text-slate-700">
-              {classSummaries.length === 0 ? (
+        {classSummaryExpanded && (
+          <div className="overflow-x-auto max-h-[380px] table-scroll">
+            <table className="w-full text-left border-collapse text-sm">
+              <thead className="sticky top-0 z-10 bg-slate-100 text-slate-700 text-xs font-semibold border-b border-slate-200">
                 <tr>
-                  <td colSpan={10} className="px-4 py-8 text-center text-sm text-slate-500">
-                    Belum ada kelas terdaftar. Tambahkan kelas di Pengaturan atau impor data siswa.
-                  </td>
+                  <th className="px-4 py-3 whitespace-nowrap">Kelas</th>
+                  <th className="px-4 py-3 text-right whitespace-nowrap">Siswa</th>
+                  <th className="px-4 py-3 text-right whitespace-nowrap">Jurnal</th>
+                  <th className="px-4 py-3 text-right whitespace-nowrap">H</th>
+                  <th className="px-4 py-3 text-right whitespace-nowrap">S</th>
+                  <th className="px-4 py-3 text-right whitespace-nowrap">I</th>
+                  <th className="px-4 py-3 text-right whitespace-nowrap">A</th>
+                  <th className="px-4 py-3 text-right whitespace-nowrap">D</th>
+                  <th className="px-4 py-3 text-right whitespace-nowrap">% Hadir</th>
+                  <th className="px-4 py-3 text-right whitespace-nowrap">Rata-rata Nilai</th>
                 </tr>
-              ) : (
-                classSummaries.map((row) => (
-                  <tr key={row.className} className="hover:bg-slate-50/80 transition-colors">
-                    <td className="px-4 py-3 font-semibold text-slate-900 whitespace-nowrap">
-                      {row.className}
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums">{row.studentCount}</td>
-                    <td className="px-4 py-3 text-right tabular-nums">{row.journalCount}</td>
-                    <td className="px-4 py-3 text-right tabular-nums text-emerald-700 font-medium">{row.counts.H}</td>
-                    <td className="px-4 py-3 text-right tabular-nums text-amber-700">{row.counts.S}</td>
-                    <td className="px-4 py-3 text-right tabular-nums text-sky-700">{row.counts.I}</td>
-                    <td className="px-4 py-3 text-right tabular-nums text-rose-700">{row.counts.A}</td>
-                    <td className="px-4 py-3 text-right tabular-nums text-violet-700">{row.counts.D}</td>
-                    <td className="px-4 py-3 text-right tabular-nums font-semibold text-slate-900">
-                      {row.presentPercent.toFixed(1)}%
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums font-semibold text-indigo-700">
-                      {row.gradedCount > 0 ? row.avgScore.toFixed(1) : '-'}
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-slate-700">
+                {classSummaries.length === 0 ? (
+                  <tr>
+                    <td colSpan={10} className="px-4 py-8 text-center text-sm text-slate-500">
+                      Belum ada kelas terdaftar. Tambahkan kelas di Pengaturan atau impor data siswa.
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                ) : (
+                  classSummaries.map((row) => (
+                    <tr key={row.className} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="px-4 py-3 font-semibold text-slate-900 whitespace-nowrap">
+                        {row.className}
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums">{row.studentCount}</td>
+                      <td className="px-4 py-3 text-right tabular-nums">{row.journalCount}</td>
+                      <td className="px-4 py-3 text-right tabular-nums text-emerald-700 font-medium">{row.counts.H}</td>
+                      <td className="px-4 py-3 text-right tabular-nums text-amber-700">{row.counts.S}</td>
+                      <td className="px-4 py-3 text-right tabular-nums text-sky-700">{row.counts.I}</td>
+                      <td className="px-4 py-3 text-right tabular-nums text-rose-700">{row.counts.A}</td>
+                      <td className="px-4 py-3 text-right tabular-nums text-violet-700">{row.counts.D}</td>
+                      <td className="px-4 py-3 text-right tabular-nums font-semibold text-slate-900">
+                        {row.presentPercent.toFixed(1)}%
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums font-semibold text-indigo-700">
+                        {row.gradedCount > 0 ? row.avgScore.toFixed(1) : '-'}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
 
       {/* Tabel Kegiatan Mengajar Terbaru */}
       <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 space-y-3">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <h3 className="text-sm font-bold text-slate-900">Kegiatan Mengajar Terbaru</h3>
-              <p className="text-xs text-slate-500">Riwayat pertemuan KBM terakhir dengan akses cepat Edit, Duplikat, Hapus & Ekspor</p>
-            </div>
+        <div
+          className={`px-5 py-4 space-y-3 ${
+            latestJournalsExpanded ? 'border-b border-slate-200' : ''
+          }`}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => setLatestJournalsExpanded((prev) => !prev)}
+              aria-expanded={latestJournalsExpanded}
+              className="flex items-center justify-between gap-3 text-left flex-1 min-w-0 group"
+            >
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-sm font-bold text-slate-900 group-hover:text-indigo-700 transition-colors">
+                    Kegiatan Mengajar Terbaru
+                  </h3>
+                  <span className="text-xs text-slate-500 tabular-nums">
+                    · {latestJournals.length} pertemuan
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Riwayat pertemuan KBM terakhir dengan akses cepat Edit, Duplikat, Hapus &amp; Ekspor
+                </p>
+              </div>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 group-hover:bg-slate-100 text-xs font-semibold text-slate-700 whitespace-nowrap shrink-0 transition-colors">
+                <span>{latestJournalsExpanded ? 'Ciutkan' : 'Tampilkan'}</span>
+                <ChevronDown
+                  className={`w-4 h-4 text-slate-500 transition-transform duration-150 ${
+                    latestJournalsExpanded ? 'rotate-180' : ''
+                  }`}
+                />
+              </span>
+            </button>
             <button
               type="button"
               onClick={() => onNavigate('journal')}
-              className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 whitespace-nowrap"
+              className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 whitespace-nowrap shrink-0"
             >
               Lihat Semua Jurnal
             </button>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
-            <span className="text-xs text-slate-500">
-              {selectedLatestIds.size > 0
-                ? `${selectedLatestIds.size} jurnal dipilih`
-                : `Menampilkan ${latestJournals.length} pertemuan terbaru`}
-            </span>
-            <TableExportToolbar
-              selectedCount={selectedLatestIds.size}
-              onDeleteSelected={handleBulkDeleteLatest}
-              onExportXlsx={() => {
-                const { headers, rows } = buildLatestDataset();
-                exportRowsToXlsx('Jurnal Terbaru', headers, rows, `Jurnal_Terbaru_${getTodayISO()}.xlsx`);
-                onToast('success', 'Jurnal terbaru diekspor ke XLSX.');
-              }}
-              onExportXls={() => {
-                const { headers, rows } = buildLatestDataset();
-                exportRowsToXls('Jurnal Terbaru', headers, rows, `Jurnal_Terbaru_${getTodayISO()}.xls`);
-                onToast('success', 'Jurnal terbaru diekspor ke XLS.');
-              }}
-              onExportWord={(cfg) => {
-                const { headers, rows } = buildLatestDataset();
-                exportDatasetToWordDoc({
-                  db,
-                  title: 'KEGIATAN MENGAJAR TERBARU',
-                  subtitle: `TA ${session.academicYear} · Semester ${session.semester}`,
-                  headers,
-                  rows,
-                  filename: `Jurnal_Terbaru_${getTodayISO()}.doc`,
-                  orientation: cfg.orientation,
-                  paperSize: cfg.paperSize,
-                });
-                onToast('success', 'Dokumen Word (.doc) diunduh.');
-              }}
-              onExportPdf={(cfg) => {
-                const { headers, rows } = buildLatestDataset();
-                exportDatasetToPdf({
-                  db,
-                  title: 'KEGIATAN MENGAJAR TERBARU',
-                  subtitle: `TA ${session.academicYear} · Semester ${session.semester}`,
-                  headers,
-                  rows,
-                  filename: `Jurnal_Terbaru_${getTodayISO()}.pdf`,
-                  orientation: cfg.orientation,
-                  paperSize: cfg.paperSize,
-                });
-                onToast('success', 'Dokumen PDF diunduh.');
-              }}
-              onPrint={(cfg) => {
-                const { headers, rows } = buildLatestDataset();
-                printDatasetExact({
-                  db,
-                  title: 'KEGIATAN MENGAJAR TERBARU',
-                  subtitle: `TA ${session.academicYear} · Semester ${session.semester}`,
-                  headers,
-                  rows,
-                  orientation: cfg.orientation,
-                  paperSize: cfg.paperSize,
-                });
-                onToast('info', 'Menyiapkan tampilan cetak jurnal terbaru...');
-              }}
-            />
-          </div>
+          {latestJournalsExpanded && (
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
+              <span className="text-xs text-slate-500">
+                {selectedLatestIds.size > 0
+                  ? `${selectedLatestIds.size} jurnal dipilih`
+                  : `Menampilkan ${latestJournals.length} pertemuan terbaru`}
+              </span>
+              <TableExportToolbar
+                selectedCount={selectedLatestIds.size}
+                onDeleteSelected={handleBulkDeleteLatest}
+                onExportXlsx={() => {
+                  const { headers, rows } = buildLatestDataset();
+                  exportRowsToXlsx('Jurnal Terbaru', headers, rows, `Jurnal_Terbaru_${getTodayISO()}.xlsx`);
+                  onToast('success', 'Jurnal terbaru diekspor ke XLSX.');
+                }}
+                onExportXls={() => {
+                  const { headers, rows } = buildLatestDataset();
+                  exportRowsToXls('Jurnal Terbaru', headers, rows, `Jurnal_Terbaru_${getTodayISO()}.xls`);
+                  onToast('success', 'Jurnal terbaru diekspor ke XLS.');
+                }}
+                onExportWord={(cfg) => {
+                  const { headers, rows } = buildLatestDataset();
+                  exportDatasetToWordDoc({
+                    db,
+                    title: 'KEGIATAN MENGAJAR TERBARU',
+                    subtitle: `TA ${session.academicYear} · Semester ${session.semester}`,
+                    headers,
+                    rows,
+                    filename: `Jurnal_Terbaru_${getTodayISO()}.doc`,
+                    orientation: cfg.orientation,
+                    paperSize: cfg.paperSize,
+                  });
+                  onToast('success', 'Dokumen Word (.doc) diunduh.');
+                }}
+                onExportPdf={(cfg) => {
+                  const { headers, rows } = buildLatestDataset();
+                  exportDatasetToPdf({
+                    db,
+                    title: 'KEGIATAN MENGAJAR TERBARU',
+                    subtitle: `TA ${session.academicYear} · Semester ${session.semester}`,
+                    headers,
+                    rows,
+                    filename: `Jurnal_Terbaru_${getTodayISO()}.pdf`,
+                    orientation: cfg.orientation,
+                    paperSize: cfg.paperSize,
+                  });
+                  onToast('success', 'Dokumen PDF diunduh.');
+                }}
+                onPrint={(cfg) => {
+                  const { headers, rows } = buildLatestDataset();
+                  printDatasetExact({
+                    db,
+                    title: 'KEGIATAN MENGAJAR TERBARU',
+                    subtitle: `TA ${session.academicYear} · Semester ${session.semester}`,
+                    headers,
+                    rows,
+                    orientation: cfg.orientation,
+                    paperSize: cfg.paperSize,
+                  });
+                  onToast('info', 'Menyiapkan tampilan cetak jurnal terbaru...');
+                }}
+              />
+            </div>
+          )}
         </div>
 
-        <div className="overflow-x-auto max-h-[420px] table-scroll">
+        {latestJournalsExpanded && (
+          <div className="overflow-x-auto max-h-[420px] table-scroll">
           <table className="w-full text-left border-collapse text-sm">
             <thead className="sticky top-0 z-10 bg-slate-100 text-slate-700 text-xs font-semibold border-b border-slate-200">
               <tr>
@@ -771,7 +837,8 @@ export function DashboardView({
               )}
             </tbody>
           </table>
-        </div>
+          </div>
+        )}
       </section>
     </div>
   );

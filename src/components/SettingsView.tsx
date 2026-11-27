@@ -7,6 +7,7 @@ import {
   AlignRight,
   Bold,
   Check,
+  ChevronDown,
   Download,
   FileSpreadsheet,
   Globe,
@@ -560,7 +561,7 @@ export function SettingsView({
 
   // Local editable state for Period & Officials
   const [academicYear, setAcademicYear] = useState(settings.academicYear);
-  const [semester, setSemester] = useState<SemesterType>(settings.semester);
+  const [semester, setSemester] = useState<SemesterType | ''>(settings.semester);
   const [signatureLocation, setSignatureLocation] = useState(settings.signatureLocation);
   const [principalTitle, setPrincipalTitle] = useState(settings.principalTitle);
   const [principalName, setPrincipalName] = useState(settings.principalName);
@@ -659,6 +660,12 @@ export function SettingsView({
   const [detailSubject, setDetailSubject] = useState<string | null>(null);
   const [detailStudent, setDetailStudent] = useState<Student | null>(null);
 
+  // Collapsible section states (collapsed by default)
+  const [periodExpanded, setPeriodExpanded] = useState(false);
+  const [profileExpanded, setProfileExpanded] = useState(false);
+  const [kopExpanded, setKopExpanded] = useState(false);
+  const [masterDataExpanded, setMasterDataExpanded] = useState(false);
+
   const rombelStudents = useMemo(() => {
     if (!detailClass) return [];
     return db.students
@@ -729,6 +736,10 @@ export function SettingsView({
 
   const handleSavePeriodAndOfficials = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!academicYear || !semester) {
+      onToast('error', 'Pilih Tahun Ajaran dan Semester Aktif terlebih dahulu.');
+      return;
+    }
     onUpdateSettings((prev) => ({
       ...prev,
       academicYear,
@@ -747,7 +758,13 @@ export function SettingsView({
     e.preventDefault();
     onUpdateSettings((prev) => ({
       ...prev,
-      kopSurat: normalizeKopSurat(kop, prev.kopSurat),
+      kopSurat: normalizeKopSurat(
+        {
+          ...kop,
+          fontFamily: kop.fontFamily || 'Times New Roman',
+        },
+        prev.kopSurat
+      ),
     }));
     onToast('success', 'Pengaturan Kop Surat Dinas berhasil disimpan.');
   };
@@ -1174,15 +1191,40 @@ export function SettingsView({
       </div>
 
       {/* Row 1: Periode & Pejabat + Profil Guru & Akun */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-stretch">
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
         {/* Pengaturan Periode Aktif & Pejabat */}
         <section className="bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col">
-          <div className="px-5 py-4 border-b border-slate-200">
-            <h2 className="text-base font-bold text-slate-900">Periode Aktif & Pejabat Pengesah</h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Menentukan tahun ajaran aktif serta identitas Kepala Sekolah pada dokumen cetak
-            </p>
+          <div className={`px-5 py-4 ${periodExpanded ? 'border-b border-slate-200' : ''}`}>
+            <button
+              type="button"
+              onClick={() => setPeriodExpanded((prev) => !prev)}
+              aria-expanded={periodExpanded}
+              className="w-full flex items-center justify-between gap-3 text-left group"
+            >
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-base font-bold text-slate-900 group-hover:text-indigo-700 transition-colors">
+                    Periode Aktif &amp; Pejabat Pengesah
+                  </h2>
+                  <span className="text-xs text-slate-500">
+                    · TA {academicYear} ({semester})
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Menentukan tahun ajaran aktif serta identitas Kepala Sekolah pada dokumen cetak
+                </p>
+              </div>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 group-hover:bg-slate-100 text-xs font-semibold text-slate-700 whitespace-nowrap shrink-0 transition-colors">
+                <span>{periodExpanded ? 'Ciutkan' : 'Tampilkan'}</span>
+                <ChevronDown
+                  className={`w-4 h-4 text-slate-500 transition-transform duration-150 ${
+                    periodExpanded ? 'rotate-180' : ''
+                  }`}
+                />
+              </span>
+            </button>
           </div>
+          {periodExpanded && (
           <form onSubmit={handleSavePeriodAndOfficials} className="p-5 space-y-4 flex-1 flex flex-col justify-between">
             <div className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1196,6 +1238,7 @@ export function SettingsView({
                     onChange={(e) => setAcademicYear(e.target.value)}
                     className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
                   >
+                    <option value="">--Pilih Tahun Ajaran--</option>
                     {settings.masterAcademicYears.map((yr) => (
                       <option key={yr} value={yr}>
                         {yr}
@@ -1210,9 +1253,10 @@ export function SettingsView({
                   <select
                     id="set-sem"
                     value={semester}
-                    onChange={(e) => setSemester(e.target.value as SemesterType)}
+                    onChange={(e) => setSemester(e.target.value as SemesterType | '')}
                     className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
                   >
+                    <option value="">--Pilih Semester--</option>
                     <option value="Ganjil">Ganjil</option>
                     <option value="Genap">Genap</option>
                   </select>
@@ -1356,20 +1400,46 @@ export function SettingsView({
                 className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold transition-colors inline-flex items-center gap-2"
               >
                 <Save className="w-4 h-4" />
-                Simpan Periode, Pejabat & Pengesahan
+                Simpan Periode, Pejabat &amp; Pengesahan
               </button>
             </div>
           </form>
+          )}
         </section>
 
         {/* Profil Guru Mapel & Identitas Sekolah */}
         <section className="bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col">
-          <div className="px-5 py-4 border-b border-slate-200">
-            <h2 className="text-base font-bold text-slate-900">Profil Guru Mapel & Identitas Sekolah</h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Identitas pengajar utama dan informasi satuan pendidikan untuk dokumen laporan
-            </p>
+          <div className={`px-5 py-4 ${profileExpanded ? 'border-b border-slate-200' : ''}`}>
+            <button
+              type="button"
+              onClick={() => setProfileExpanded((prev) => !prev)}
+              aria-expanded={profileExpanded}
+              className="w-full flex items-center justify-between gap-3 text-left group"
+            >
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-base font-bold text-slate-900 group-hover:text-indigo-700 transition-colors">
+                    Profil Guru Mapel &amp; Identitas Sekolah
+                  </h2>
+                  <span className="text-xs text-slate-500 truncate max-w-[240px]">
+                    · {teacherName || '-'}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Identitas pengajar utama dan informasi satuan pendidikan untuk dokumen laporan
+                </p>
+              </div>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 group-hover:bg-slate-100 text-xs font-semibold text-slate-700 whitespace-nowrap shrink-0 transition-colors">
+                <span>{profileExpanded ? 'Ciutkan' : 'Tampilkan'}</span>
+                <ChevronDown
+                  className={`w-4 h-4 text-slate-500 transition-transform duration-150 ${
+                    profileExpanded ? 'rotate-180' : ''
+                  }`}
+                />
+              </span>
+            </button>
           </div>
+          {profileExpanded && (
           <form onSubmit={handleSaveProfileAccount} className="p-5 space-y-4 flex-1 flex flex-col justify-between">
             <div className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1432,22 +1502,48 @@ export function SettingsView({
                 className="px-4 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold transition-colors inline-flex items-center gap-2"
               >
                 <Save className="w-4 h-4" />
-                Simpan Profil & Akun
+                Simpan Profil &amp; Akun
               </button>
             </div>
           </form>
+          )}
         </section>
       </div>
 
       {/* Pengaturan Kop Surat Standar Dinas + Live Preview */}
       <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200">
-          <h2 className="text-base font-bold text-slate-900">Pengaturan Kop Surat Standar Dinas</h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Atur 6 baris teks kop surat dan unggah logo instansi kiri/kanan beserta pratinjau langsung bergaris ganda
-          </p>
+        <div className={`px-5 py-4 ${kopExpanded ? 'border-b border-slate-200' : ''}`}>
+          <button
+            type="button"
+            onClick={() => setKopExpanded((prev) => !prev)}
+            aria-expanded={kopExpanded}
+            className="w-full flex items-center justify-between gap-3 text-left group"
+          >
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base font-bold text-slate-900 group-hover:text-indigo-700 transition-colors">
+                  Pengaturan Kop Surat Standar Dinas
+                </h2>
+                <span className="text-xs text-slate-500">
+                  · {kop.fontFamily || 'Times New Roman'} · Spasi {normalizeKopLineSpacing(kop.lineSpacing).toFixed(2)}x
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Atur 6 baris teks kop surat dan unggah logo instansi kiri/kanan beserta pratinjau langsung bergaris ganda
+              </p>
+            </div>
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 group-hover:bg-slate-100 text-xs font-semibold text-slate-700 whitespace-nowrap shrink-0 transition-colors">
+              <span>{kopExpanded ? 'Ciutkan' : 'Tampilkan'}</span>
+              <ChevronDown
+                className={`w-4 h-4 text-slate-500 transition-transform duration-150 ${
+                  kopExpanded ? 'rotate-180' : ''
+                }`}
+              />
+            </span>
+          </button>
         </div>
 
+        {kopExpanded && (
         <form onSubmit={handleSaveKopSurat} className="p-5 space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             <div className="lg:col-span-7 space-y-3">
@@ -1460,12 +1556,16 @@ export function SettingsView({
                   </label>
                   <select
                     id="kop-font-family"
-                    value={kop.fontFamily || 'Times New Roman'}
+                    value={kop.fontFamily || ''}
                     onChange={(e) =>
-                      setKop((prev) => ({ ...prev, fontFamily: e.target.value as PrintFontFamily }))
+                      setKop((prev) => ({
+                        ...prev,
+                        fontFamily: e.target.value as PrintFontFamily,
+                      }))
                     }
                     className="px-2.5 py-1.5 text-xs font-medium border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
                   >
+                    <option value="">--Pilih Jenis Huruf--</option>
                     <option value="Times New Roman">Times New Roman</option>
                     <option value="Tahoma">Tahoma</option>
                     <option value="Arial">Arial</option>
@@ -2009,17 +2109,43 @@ export function SettingsView({
             </div>
           </div>
         </form>
+        )}
       </section>
 
       {/* 4 Kartu Master Data */}
-      <section className="space-y-3">
-        <div>
-          <h2 className="text-base font-bold text-slate-900">Master Data Referensi</h2>
-          <p className="text-xs text-slate-500">
-            Kelola daftar kelas, mata pelajaran, jenis ujian, dan tahun ajaran beserta fitur template, impor massal/Excel, dan ekspor
-          </p>
+      <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+        <div className={`px-5 py-4 ${masterDataExpanded ? 'border-b border-slate-200' : ''}`}>
+          <button
+            type="button"
+            onClick={() => setMasterDataExpanded((prev) => !prev)}
+            aria-expanded={masterDataExpanded}
+            className="w-full flex items-center justify-between gap-3 text-left group"
+          >
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base font-bold text-slate-900 group-hover:text-indigo-700 transition-colors">
+                  Master Data Referensi
+                </h2>
+                <span className="text-xs text-slate-500 tabular-nums">
+                  · {settings.masterClasses.length} kelas · {settings.masterSubjects.length} mapel · {settings.masterExamTypes.length} ujian · {settings.masterAcademicYears.length} TA
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Kelola daftar kelas, mata pelajaran, jenis ujian, dan tahun ajaran beserta fitur template, impor massal/Excel, dan ekspor
+              </p>
+            </div>
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 group-hover:bg-slate-100 text-xs font-semibold text-slate-700 whitespace-nowrap shrink-0 transition-colors">
+              <span>{masterDataExpanded ? 'Ciutkan' : 'Tampilkan'}</span>
+              <ChevronDown
+                className={`w-4 h-4 text-slate-500 transition-transform duration-150 ${
+                  masterDataExpanded ? 'rotate-180' : ''
+                }`}
+              />
+            </span>
+          </button>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-4 gap-5 items-start">
+        {masterDataExpanded && (
+        <div className="p-5 grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-4 gap-5 items-start">
           <MasterListCard
             title="Master Daftar Kelas"
             subtitle="Klik nama kelas untuk buka detail rombel"
@@ -2088,6 +2214,7 @@ export function SettingsView({
             onConfirm={onConfirm}
           />
         </div>
+        )}
       </section>
 
       {/* Utilitas Manajemen Data Cloud */}

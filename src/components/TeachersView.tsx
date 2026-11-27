@@ -76,9 +76,9 @@ export function TeachersView({
   const [subject, setSubject] = useState(settings.masterSubjects[0] || '');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
-  const [gender, setGender] = useState<'L' | 'P'>('L');
-  const [employmentStatus, setEmploymentStatus] = useState<TeacherEmploymentStatus>('PNS');
-  const [status, setStatus] = useState<'Aktif' | 'Cuti' | 'Nonaktif'>('Aktif');
+  const [gender, setGender] = useState<'L' | 'P' | ''>('');
+  const [employmentStatus, setEmploymentStatus] = useState<TeacherEmploymentStatus | ''>('');
+  const [status, setStatus] = useState<'Aktif' | 'Cuti' | 'Nonaktif' | ''>('');
   const [address, setAddress] = useState('');
   const [photo, setPhoto] = useState('');
 
@@ -88,7 +88,7 @@ export function TeachersView({
 
   // Filters & Multi-Select
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState('ALL');
+  const [statusFilter, setStatusFilter] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [formModalOpen, setFormModalOpen] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
@@ -101,9 +101,9 @@ export function TeachersView({
     setSubject(settings.masterSubjects[0] || '');
     setEmail('');
     setPhone('');
-    setGender('L');
-    setEmploymentStatus('PNS');
-    setStatus('Aktif');
+    setGender('');
+    setEmploymentStatus('');
+    setStatus('');
     setAddress('');
     setPhoto('');
   };
@@ -122,8 +122,8 @@ export function TeachersView({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) {
-      onToast('error', 'Nama Guru wajib diisi.');
+    if (!name.trim() || !gender || !employmentStatus || !status) {
+      onToast('error', 'Nama Guru, Jenis Kelamin, Status Kepegawaian, dan Status Aktif wajib diisi.');
       return;
     }
     onUpsertTeacher({
@@ -186,7 +186,7 @@ export function TeachersView({
     const q = searchQuery.trim().toLowerCase();
     return teachers
       .filter((t) => {
-        if (statusFilter !== 'ALL' && t.status !== statusFilter) return false;
+        if (statusFilter && statusFilter !== 'ALL' && t.status !== statusFilter) return false;
         if (q) {
           return (
             t.name.toLowerCase().includes(q) ||
@@ -453,6 +453,7 @@ export function TeachersView({
                 aria-label="Filter status guru"
                 className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Status--</option>
                 <option value="ALL">Semua Status</option>
                 <option value="Aktif">Aktif</option>
                 <option value="Cuti">Cuti</option>
@@ -704,9 +705,10 @@ export function TeachersView({
               <select
                 id="tch-gender"
                 value={gender}
-                onChange={(e) => setGender(e.target.value as 'L' | 'P')}
+                onChange={(e) => setGender(e.target.value as 'L' | 'P' | '')}
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Jenis Kelamin--</option>
                 <option value="L">Laki-laki (L)</option>
                 <option value="P">Perempuan (P)</option>
               </select>
@@ -755,9 +757,10 @@ export function TeachersView({
               <select
                 id="tch-emp"
                 value={employmentStatus}
-                onChange={(e) => setEmploymentStatus(e.target.value as TeacherEmploymentStatus)}
+                onChange={(e) => setEmploymentStatus(e.target.value as TeacherEmploymentStatus | '')}
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Kepegawaian--</option>
                 {EMPLOYMENT_TYPES.map((t) => (
                   <option key={t} value={t}>
                     {t}
@@ -773,9 +776,10 @@ export function TeachersView({
               <select
                 id="tch-status"
                 value={status}
-                onChange={(e) => setStatus(e.target.value as 'Aktif' | 'Cuti' | 'Nonaktif')}
+                onChange={(e) => setStatus(e.target.value as 'Aktif' | 'Cuti' | 'Nonaktif' | '')}
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Status--</option>
                 <option value="Aktif">Aktif</option>
                 <option value="Cuti">Cuti</option>
                 <option value="Nonaktif">Nonaktif</option>
@@ -834,7 +838,7 @@ export function TeachersView({
             <div className="flex items-center gap-3">
               <PersonAvatar
                 src={photo}
-                fallbackSrc={getTeacherDummyPhoto(gender, position)}
+                fallbackSrc={getTeacherDummyPhoto(gender === 'P' ? 'P' : 'L', position)}
                 alt={name || 'Preview foto guru/TU'}
                 className="w-12 h-12 rounded-xl object-cover object-top border border-slate-200 bg-slate-100 shrink-0"
               />

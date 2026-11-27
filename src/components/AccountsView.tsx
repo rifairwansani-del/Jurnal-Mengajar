@@ -78,9 +78,9 @@ export function AccountsView({
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [role, setRole] = useState<AccountRole>('Guru Mapel');
+  const [role, setRole] = useState<AccountRole | ''>('');
   const [nip, setNip] = useState('');
-  const [status, setStatus] = useState<'Aktif' | 'Nonaktif'>('Aktif');
+  const [status, setStatus] = useState<'Aktif' | 'Nonaktif' | ''>('');
   const [signatureImage, setSignatureImage] = useState('');
   const [schoolStampImage, setSchoolStampImage] = useState('');
   const [sigModalOpen, setSigModalOpen] = useState(false);
@@ -90,7 +90,7 @@ export function AccountsView({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [roleFilter, setRoleFilter] = useState('ALL');
+  const [roleFilter, setRoleFilter] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [formModalOpen, setFormModalOpen] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
@@ -105,9 +105,9 @@ export function AccountsView({
     setUsername('');
     setPassword('');
     setShowPassword(false);
-    setRole('Guru Mapel');
+    setRole('');
     setNip('');
-    setStatus('Aktif');
+    setStatus('');
     setSignatureImage('');
     setSchoolStampImage('');
   };
@@ -210,9 +210,17 @@ export function AccountsView({
           }
         : undefined;
 
+    if (!isSelfLimitedEdit && (!role || !status)) {
+      onToast('error', 'Peran / Hak Akses dan Status Akun wajib dipilih.');
+      return;
+    }
+
     setSubmitting(true);
     try {
-      const resolvedRole = isSelfLimitedEdit && existing ? existing.role : role;
+      const resolvedRole: AccountRole =
+        isSelfLimitedEdit && existing ? existing.role : (role as AccountRole);
+      const resolvedStatus: 'Aktif' | 'Nonaktif' =
+        isSelfLimitedEdit && existing ? existing.status : (status as 'Aktif' | 'Nonaktif');
       const resolvedStamp =
         resolvedRole === 'Kepala Sekolah' ? schoolStampImage : '';
       const result = await onUpsertAccount(
@@ -224,7 +232,7 @@ export function AccountsView({
           hasPassword: Boolean(password || existing?.hasPassword),
           role: resolvedRole,
           nip: nip.trim(),
-          status: isSelfLimitedEdit && existing ? existing.status : status,
+          status: resolvedStatus,
           lastLogin: existing?.lastLogin ?? '-',
           signatureImage,
           schoolStampImage: resolvedStamp,
@@ -332,7 +340,7 @@ export function AccountsView({
   const filteredAccounts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return accounts.filter((a) => {
-      if (roleFilter !== 'ALL' && a.role !== roleFilter) return false;
+      if (roleFilter && roleFilter !== 'ALL' && a.role !== roleFilter) return false;
       if (q) {
         return (
           a.name.toLowerCase().includes(q) ||
@@ -563,6 +571,7 @@ export function AccountsView({
                 aria-label="Filter peran akun"
                 className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Peran--</option>
                 <option value="ALL">Semua Peran</option>
                 {ROLE_OPTIONS.map((r) => (
                   <option key={r} value={r}>
@@ -847,7 +856,7 @@ export function AccountsView({
                 onChange={(e) => handleLinkFromTeacher(e.target.value)}
                 className="flex-1 px-3 py-1.5 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
-                <option value="">-- Pilih Guru untuk mengisi Nama, NIP, Username & Email --</option>
+                <option value="">--Pilih Guru / Tendik--</option>
                 {teachers.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.name} ({t.position})
@@ -971,9 +980,10 @@ export function AccountsView({
                 id="acc-role"
                 value={role}
                 disabled={isSelfLimitedEdit}
-                onChange={(e) => setRole(e.target.value as AccountRole)}
+                onChange={(e) => setRole(e.target.value as AccountRole | '')}
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600 disabled:bg-slate-100 disabled:text-slate-500"
               >
+                <option value="">--Pilih Peran--</option>
                 {ROLE_OPTIONS.map((r) => (
                   <option key={r} value={r}>
                     {r}
@@ -1004,9 +1014,10 @@ export function AccountsView({
                 id="acc-status"
                 value={status}
                 disabled={isSelfLimitedEdit}
-                onChange={(e) => setStatus(e.target.value as 'Aktif' | 'Nonaktif')}
+                onChange={(e) => setStatus(e.target.value as 'Aktif' | 'Nonaktif' | '')}
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600 disabled:bg-slate-100 disabled:text-slate-500"
               >
+                <option value="">--Pilih Status--</option>
                 <option value="Aktif">Aktif</option>
                 <option value="Nonaktif">Nonaktif</option>
               </select>

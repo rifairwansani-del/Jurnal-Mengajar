@@ -49,7 +49,7 @@ export function LoginView({
 }: LoginViewProps) {
   const [loginMode, setLoginMode] = useState<'credentials' | 'google'>('credentials');
   const [academicYear, setAcademicYear] = useState(settings.academicYear || '2025/2026');
-  const [semester, setSemester] = useState<SemesterType>(settings.semester || 'Ganjil');
+  const [semester, setSemester] = useState<SemesterType | ''>(settings.semester || 'Ganjil');
   const [periodChangedByUser, setPeriodChangedByUser] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -64,6 +64,10 @@ export function LoginView({
 
   const handleGoogleClick = async () => {
     setErrorMsg('');
+    if (!academicYear || !semester) {
+      setErrorMsg('Pilih Tahun Ajaran dan Semester terlebih dahulu.');
+      return;
+    }
     try {
       await onGoogleLogin(academicYear, semester, periodChangedByUser);
     } catch (err) {
@@ -76,6 +80,10 @@ export function LoginView({
   const handleCredentialsSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
+    if (!academicYear || !semester) {
+      setErrorMsg('Pilih Tahun Ajaran dan Semester terlebih dahulu.');
+      return;
+    }
     const cleanUser = username.trim();
     if (!cleanUser || !password) {
       setErrorMsg('Username dan password wajib diisi.');
@@ -175,6 +183,7 @@ export function LoginView({
                   }}
                   className="w-full bg-transparent text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer"
                 >
+                  <option value="">--Pilih Tahun Ajaran--</option>
                   {settings.masterAcademicYears.map((yr) => (
                     <option key={yr} value={yr}>
                       {yr}
@@ -192,11 +201,12 @@ export function LoginView({
                   aria-label="Semester"
                   value={semester}
                   onChange={(e) => {
-                    setSemester(e.target.value as SemesterType);
+                    setSemester(e.target.value as SemesterType | '');
                     setPeriodChangedByUser(true);
                   }}
                   className="w-full bg-transparent text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer"
                 >
+                  <option value="">--Pilih Semester--</option>
                   <option value="Ganjil">Ganjil</option>
                   <option value="Genap">Genap</option>
                 </select>

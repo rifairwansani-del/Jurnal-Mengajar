@@ -97,7 +97,7 @@ export function StudentsView({
   const [nis, setNis] = useState('');
   const [nisn, setNisn] = useState('');
   const [name, setName] = useState('');
-  const [className, setClassName] = useState(classOptions[0] || '');
+  const [className, setClassName] = useState('');
   const [absentNo, setAbsentNo] = useState('');
   const [birthPlace, setBirthPlace] = useState('');
   const [birthDate, setBirthDate] = useState('');
@@ -105,8 +105,8 @@ export function StudentsView({
   const [photo, setPhoto] = useState('');
   const [address, setAddress] = useState('');
   const [phone, setPhone] = useState('');
-  const [gender, setGender] = useState<'L' | 'P'>('L');
-  const [status, setStatus] = useState<StudentStatus>('Aktif');
+  const [gender, setGender] = useState<'L' | 'P' | ''>('');
+  const [status, setStatus] = useState<StudentStatus | ''>('');
   const [homeroomTeacher, setHomeroomTeacher] = useState('');
   const [counselorTeacher, setCounselorTeacher] = useState('');
   const [entryYear, setEntryYear] = useState('2025');
@@ -117,8 +117,8 @@ export function StudentsView({
 
   // Table Filters & Multi-Select
   const [searchQuery, setSearchQuery] = useState('');
-  const [classFilter, setClassFilter] = useState('ALL');
-  const [statusFilter, setStatusFilter] = useState('ALL');
+  const [classFilter, setClassFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [formModalOpen, setFormModalOpen] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
@@ -129,7 +129,7 @@ export function StudentsView({
     setNis('');
     setNisn('');
     setName('');
-    setClassName(classOptions[0] || '');
+    setClassName('');
     setAbsentNo('');
     setBirthPlace('');
     setBirthDate('');
@@ -137,8 +137,8 @@ export function StudentsView({
     setPhoto('');
     setAddress('');
     setPhone('');
-    setGender('L');
-    setStatus('Aktif');
+    setGender('');
+    setStatus('');
     setHomeroomTeacher('');
     setCounselorTeacher('');
     setEntryYear('2025');
@@ -158,8 +158,8 @@ export function StudentsView({
 
   const handleSubmitStudent = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!nis.trim() || !name.trim() || !className.trim()) {
-      onToast('error', 'NIS, Nama Lengkap, dan Kelas wajib diisi.');
+    if (!nis.trim() || !name.trim() || !className.trim() || !gender || !status) {
+      onToast('error', 'NIS, Nama Lengkap, Kelas, Jenis Kelamin, dan Status wajib diisi.');
       return;
     }
 
@@ -291,8 +291,8 @@ export function StudentsView({
     const q = searchQuery.trim().toLowerCase();
     return students
       .filter((s) => {
-        if (classFilter !== 'ALL' && s.className !== classFilter) return false;
-        if (statusFilter !== 'ALL' && (s.status || 'Aktif') !== statusFilter) return false;
+        if (classFilter && classFilter !== 'ALL' && s.className !== classFilter) return false;
+        if (statusFilter && statusFilter !== 'ALL' && (s.status || 'Aktif') !== statusFilter) return false;
         if (q) {
           return (
             s.name.toLowerCase().includes(q) ||
@@ -650,6 +650,7 @@ export function StudentsView({
                 aria-label="Filter data siswa menurut kelas"
                 className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Kelas--</option>
                 <option value="ALL">Semua Kelas</option>
                 {classOptions.map((c) => (
                   <option key={c} value={c}>
@@ -664,6 +665,7 @@ export function StudentsView({
                 aria-label="Filter status siswa"
                 className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Status--</option>
                 <option value="ALL">Semua Status</option>
                 {STUDENT_STATUS_OPTIONS.map((stOpt) => (
                   <option key={stOpt} value={stOpt}>
@@ -962,6 +964,7 @@ export function StudentsView({
                 onChange={(e) => setClassName(e.target.value)}
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Kelas--</option>
                 {classOptions.map((c) => (
                   <option key={c} value={c}>
                     {c}
@@ -994,9 +997,10 @@ export function StudentsView({
               <select
                 id="st-gender"
                 value={gender}
-                onChange={(e) => setGender(e.target.value as 'L' | 'P')}
+                onChange={(e) => setGender(e.target.value as 'L' | 'P' | '')}
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Jenis Kelamin--</option>
                 <option value="L">Laki-laki (L)</option>
                 <option value="P">Perempuan (P)</option>
               </select>
@@ -1095,9 +1099,10 @@ export function StudentsView({
               <select
                 id="st-status"
                 value={status}
-                onChange={(e) => setStatus(e.target.value as StudentStatus)}
+                onChange={(e) => setStatus(e.target.value as StudentStatus | '')}
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Status--</option>
                 {STUDENT_STATUS_OPTIONS.map((opt) => (
                   <option key={opt} value={opt}>
                     {opt}
@@ -1150,7 +1155,7 @@ export function StudentsView({
               <div className="flex items-center gap-3">
                 <PersonAvatar
                   src={photo}
-                  fallbackSrc={getStudentDummyPhoto(gender)}
+                  fallbackSrc={getStudentDummyPhoto(gender === 'P' ? 'P' : 'L')}
                   alt={name || 'Preview foto siswa'}
                   className="w-11 h-11 rounded-xl object-cover object-top border border-slate-200 bg-slate-100 shrink-0"
                 />

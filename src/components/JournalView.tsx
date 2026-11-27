@@ -9,6 +9,7 @@ import {
   Search,
   Trash2,
   Upload,
+  ChevronDown,
 } from 'lucide-react';
 import {
   AttendanceRecord,
@@ -76,7 +77,7 @@ export function JournalView({
   const [attendanceMap, setAttendanceMap] = useState<Record<string, AttendanceRecord>>({});
 
   // Section 2: History filter, bulk selection & import
-  const [historyClassFilter, setHistoryClassFilter] = useState<string>('ALL');
+  const [historyClassFilter, setHistoryClassFilter] = useState<string>('');
   const [historySearch, setHistorySearch] = useState<string>('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showImportBox, setShowImportBox] = useState(false);
@@ -84,12 +85,14 @@ export function JournalView({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Section 3: Horizontal Attendance Ledger
-  const [ledgerClass, setLedgerClass] = useState<string>(settings.masterClasses[0] || '');
-  const [ledgerSubject, setLedgerSubject] = useState<string>('ALL');
+  const [ledgerClass, setLedgerClass] = useState<string>('');
+  const [ledgerSubject, setLedgerSubject] = useState<string>('');
   const [ledgerEdits, setLedgerEdits] = useState<Record<string, Record<string, AttendanceStatus>>>({});
   const [ledgerDirty, setLedgerDirty] = useState(false);
   const [formModalOpen, setFormModalOpen] = useState(false);
   const [detailStudent, setDetailStudent] = useState<Student | null>(null);
+  const [historyExpanded, setHistoryExpanded] = useState(false);
+  const [ledgerExpanded, setLedgerExpanded] = useState(false);
 
   const classOptions = useMemo(() => {
     const set = new Set(settings.masterClasses);
@@ -98,12 +101,6 @@ export function JournalView({
     });
     return Array.from(set).sort(compareClassNames);
   }, [settings.masterClasses, students]);
-
-  useEffect(() => {
-    if (!ledgerClass && classOptions.length > 0) {
-      setLedgerClass(classOptions[0]);
-    }
-  }, [ledgerClass, classOptions]);
 
   // Apply external draft (from Dashboard Edit/Duplicate)
   useEffect(() => {
@@ -256,7 +253,7 @@ export function JournalView({
   const filteredHistory = useMemo(() => {
     const q = historySearch.trim().toLowerCase();
     return activeJournals.filter((j) => {
-      if (historyClassFilter !== 'ALL' && j.className !== historyClassFilter) {
+      if (historyClassFilter && historyClassFilter !== 'ALL' && j.className !== historyClassFilter) {
         return false;
       }
       if (q) {
@@ -491,13 +488,15 @@ export function JournalView({
   // Section 3: Horizontal Ledger Data
   const ledgerJournals = useMemo(
     () =>
-      activeJournals
-        .filter(
-          (j) =>
-            j.className === ledgerClass &&
-            (ledgerSubject === 'ALL' || j.subject === ledgerSubject)
-        )
-        .sort((a, b) => (a.date > b.date ? 1 : a.date < b.date ? -1 : a.jamKe.localeCompare(b.jamKe))),
+      ledgerClass
+        ? activeJournals
+            .filter(
+              (j) =>
+                j.className === ledgerClass &&
+                (!ledgerSubject || ledgerSubject === 'ALL' || j.subject === ledgerSubject)
+            )
+            .sort((a, b) => (a.date > b.date ? 1 : a.date < b.date ? -1 : a.jamKe.localeCompare(b.jamKe)))
+        : [],
     [activeJournals, ledgerClass, ledgerSubject]
   );
 
@@ -589,22 +588,50 @@ export function JournalView({
 
       {/* BAGIAN 1: RIWAYAT JURNAL TERSIMPAN */}
       <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 space-y-3">
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-            <div>
-              <h2 className="text-base font-bold text-slate-900">Riwayat Jurnal Tersimpan</h2>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Cari, filter per kelas, pilih untuk edit, duplikat, hapus, impor, ekspor, atau cetak
-              </p>
-            </div>
+        <div
+          className={`px-5 py-4 space-y-3 ${
+            historyExpanded ? 'border-b border-slate-200' : ''
+          }`}
+        >
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => setHistoryExpanded((prev) => !prev)}
+              aria-expanded={historyExpanded}
+              className="flex items-center justify-between gap-3 text-left flex-1 min-w-0 group"
+            >
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-base font-bold text-slate-900 group-hover:text-indigo-700 transition-colors">
+                    Riwayat Jurnal Tersimpan
+                  </h2>
+                  <span className="text-xs text-slate-500 tabular-nums">
+                    · {filteredHistory.length} jurnal
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Cari, filter per kelas, pilih untuk edit, duplikat, hapus, impor, ekspor, atau cetak
+                </p>
+              </div>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 group-hover:bg-slate-100 text-xs font-semibold text-slate-700 whitespace-nowrap shrink-0 transition-colors">
+                <span>{historyExpanded ? 'Ciutkan' : 'Tampilkan'}</span>
+                <ChevronDown
+                  className={`w-4 h-4 text-slate-500 transition-transform duration-150 ${
+                    historyExpanded ? 'rotate-180' : ''
+                  }`}
+                />
+              </span>
+            </button>
 
-            <div className="flex flex-wrap items-center gap-2.5">
+            {historyExpanded && (
+              <div className="flex flex-wrap items-center gap-2.5">
               <select
                 value={historyClassFilter}
                 onChange={(e) => setHistoryClassFilter(e.target.value)}
                 aria-label="Filter riwayat berdasarkan kelas"
                 className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Kelas--</option>
                 <option value="ALL">Semua Kelas</option>
                 {classOptions.map((c) => (
                   <option key={c} value={c}>
@@ -633,9 +660,10 @@ export function JournalView({
                 {showImportBox ? 'Tutup Impor' : 'Impor Jurnal'}
               </button>
             </div>
+            )}
           </div>
 
-          {showImportBox && (
+          {historyExpanded && showImportBox && (
             <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
               <p className="text-xs text-slate-600">
                 Format kolom: <strong>Tanggal (YYYY-MM-DD), Jam Ke, Kelas, Mata Pelajaran, Materi Pokok, Kegiatan Pembelajaran</strong>. Kehadiran siswa otomatis di-set Hadir (H).
@@ -677,6 +705,7 @@ export function JournalView({
             </div>
           )}
 
+          {historyExpanded && (
           <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
             <span className="text-xs text-slate-500">
               {selectedIds.size > 0
@@ -740,8 +769,10 @@ export function JournalView({
               }}
             />
           </div>
+          )}
         </div>
 
+        {historyExpanded && (
         <div className="overflow-x-auto max-h-[420px] table-scroll">
           <table className="w-full text-left border-collapse text-sm">
             <thead className="sticky top-0 z-10 bg-slate-100 text-slate-700 text-xs font-semibold border-b border-slate-200">
@@ -847,19 +878,47 @@ export function JournalView({
             </tbody>
           </table>
         </div>
+        )}
       </section>
 
       {/* BAGIAN 3: LEGER KEHADIRAN PER KELAS (MENDATAR & EDITABLE INLINE) */}
       <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 space-y-3">
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-            <div>
-              <h2 className="text-base font-bold text-slate-900">Leger Kehadiran per Kelas</h2>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Ketik langsung huruf status (H / S / I / A / D) di sel tanggal lalu klik Simpan Perubahan
-              </p>
-            </div>
+        <div
+          className={`px-5 py-4 space-y-3 ${
+            ledgerExpanded ? 'border-b border-slate-200' : ''
+          }`}
+        >
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => setLedgerExpanded((prev) => !prev)}
+              aria-expanded={ledgerExpanded}
+              className="flex items-center justify-between gap-3 text-left flex-1 min-w-0 group"
+            >
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-base font-bold text-slate-900 group-hover:text-indigo-700 transition-colors">
+                    Leger Kehadiran per Kelas
+                  </h2>
+                  <span className="text-xs text-slate-500 tabular-nums">
+                    · {ledgerClass || '-'} · {ledgerStudents.length} siswa · {ledgerJournals.length} pertemuan
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Ketik langsung huruf status (H / S / I / A / D) di sel tanggal lalu klik Simpan Perubahan
+                </p>
+              </div>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 group-hover:bg-slate-100 text-xs font-semibold text-slate-700 whitespace-nowrap shrink-0 transition-colors">
+                <span>{ledgerExpanded ? 'Ciutkan' : 'Tampilkan'}</span>
+                <ChevronDown
+                  className={`w-4 h-4 text-slate-500 transition-transform duration-150 ${
+                    ledgerExpanded ? 'rotate-180' : ''
+                  }`}
+                />
+              </span>
+            </button>
 
+            {ledgerExpanded && (
             <div className="flex flex-wrap items-center gap-2.5">
               <select
                 value={ledgerClass}
@@ -867,6 +926,7 @@ export function JournalView({
                 aria-label="Pilih kelas untuk leger kehadiran"
                 className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Kelas--</option>
                 {classOptions.map((c) => (
                   <option key={c} value={c}>
                     Kelas {c}
@@ -880,6 +940,7 @@ export function JournalView({
                 aria-label="Filter mata pelajaran leger"
                 className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Mapel--</option>
                 <option value="ALL">Semua Mata Pelajaran</option>
                 {settings.masterSubjects.map((s) => (
                   <option key={s} value={s}>
@@ -902,11 +963,13 @@ export function JournalView({
                 Simpan Perubahan
               </button>
             </div>
+            )}
           </div>
 
+          {ledgerExpanded && (
           <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
             <span className="text-xs text-slate-500">
-              {ledgerStudents.length} siswa · {ledgerJournals.length} pertemuan KBM ({ledgerSubject === 'ALL' ? 'Semua Mapel' : ledgerSubject})
+              {ledgerStudents.length} siswa · {ledgerJournals.length} pertemuan KBM ({!ledgerSubject || ledgerSubject === 'ALL' ? 'Semua Mapel' : ledgerSubject})
             </span>
             <TableExportToolbar
               onExportXlsx={() => {
@@ -954,7 +1017,7 @@ export function JournalView({
                 exportDatasetToWordDoc({
                   db,
                   title: `LEGER KEHADIRAN SISWA KELAS ${ledgerClass}`,
-                  subtitle: `${ledgerSubject === 'ALL' ? 'Semua Mata Pelajaran' : ledgerSubject} · TA ${session.academicYear}`,
+                  subtitle: `${!ledgerSubject || ledgerSubject === 'ALL' ? 'Semua Mata Pelajaran' : ledgerSubject} · TA ${session.academicYear}`,
                   headers,
                   rows,
                   filename: `Leger_Kehadiran_${ledgerClass}_${getTodayISO()}.doc`,
@@ -978,7 +1041,7 @@ export function JournalView({
                 exportDatasetToPdf({
                   db,
                   title: `LEGER KEHADIRAN SISWA KELAS ${ledgerClass}`,
-                  subtitle: `${ledgerSubject === 'ALL' ? 'Semua Mata Pelajaran' : ledgerSubject} · TA ${session.academicYear}`,
+                  subtitle: `${!ledgerSubject || ledgerSubject === 'ALL' ? 'Semua Mata Pelajaran' : ledgerSubject} · TA ${session.academicYear}`,
                   headers,
                   rows,
                   filename: `Leger_Kehadiran_${ledgerClass}_${getTodayISO()}.pdf`,
@@ -1002,7 +1065,7 @@ export function JournalView({
                 printDatasetExact({
                   db,
                   title: `LEGER KEHADIRAN SISWA KELAS ${ledgerClass}`,
-                  subtitle: `${ledgerSubject === 'ALL' ? 'Semua Mata Pelajaran' : ledgerSubject} · TA ${session.academicYear}`,
+                  subtitle: `${!ledgerSubject || ledgerSubject === 'ALL' ? 'Semua Mata Pelajaran' : ledgerSubject} · TA ${session.academicYear}`,
                   headers,
                   rows,
                   orientation: cfg.orientation,
@@ -1012,8 +1075,10 @@ export function JournalView({
               }}
             />
           </div>
+          )}
         </div>
 
+        {ledgerExpanded && (
         <div className="overflow-x-auto max-h-[420px] table-scroll">
           <table className="w-full text-left border-collapse text-xs sm:text-sm">
             <thead className="sticky top-0 z-20 bg-slate-100 text-slate-700 text-xs font-semibold border-b border-slate-200">
@@ -1047,7 +1112,16 @@ export function JournalView({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-slate-700">
-              {ledgerStudents.length === 0 ? (
+              {!ledgerClass ? (
+                <tr>
+                  <td
+                    colSpan={8 + ledgerJournals.length}
+                    className="px-4 py-10 text-center text-sm text-slate-500"
+                  >
+                    Silakan pilih kelas terlebih dahulu untuk melihat leger kehadiran.
+                  </td>
+                </tr>
+              ) : ledgerStudents.length === 0 ? (
                 <tr>
                   <td
                     colSpan={8 + ledgerJournals.length}
@@ -1123,6 +1197,7 @@ export function JournalView({
             </tbody>
           </table>
         </div>
+        )}
       </section>
 
       <FormModal
@@ -1174,7 +1249,7 @@ export function JournalView({
                 onChange={(e) => setClassName(e.target.value)}
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600"
               >
-                <option value="">-- Pilih Kelas --</option>
+                <option value="">--Pilih Kelas--</option>
                 {classOptions.map((c) => (
                   <option key={c} value={c}>
                     {c}
@@ -1193,7 +1268,7 @@ export function JournalView({
                 onChange={(e) => setSubject(e.target.value)}
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600"
               >
-                <option value="">-- Pilih Mata Pelajaran --</option>
+                <option value="">--Pilih Mapel--</option>
                 {settings.masterSubjects.map((subj) => (
                   <option key={subj} value={subj}>
                     {subj}

@@ -42,9 +42,9 @@ export function TableExportToolbar({
   onPrint,
 }: TableExportToolbarProps) {
   const [orientation, setOrientation] = useState<PaperOrientation>(defaultOrientation);
-  const [paperSize, setPaperSize] = useState<PaperSizeId>(defaultPaperSize);
+  const [paperSize, setPaperSize] = useState<PaperSizeId | ''>(defaultPaperSize);
 
-  const cfg: PrintPageConfig = { orientation, paperSize };
+  const cfg: PrintPageConfig = { orientation, paperSize: paperSize || 'A4' };
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -119,10 +119,11 @@ export function TableExportToolbar({
 
       <select
         value={paperSize}
-        onChange={(e) => setPaperSize(e.target.value as PaperSizeId)}
+        onChange={(e) => setPaperSize(e.target.value as PaperSizeId | '')}
         aria-label="Ukuran kertas cetak"
         className="px-2 py-1.5 text-[11px] font-semibold border border-slate-200 rounded-lg bg-white text-slate-700 focus:outline-none focus:border-indigo-600"
       >
+        <option value="">--Pilih Kertas--</option>
         {PAPER_SIZES.map((sz) => (
           <option key={sz} value={sz}>
             {sz}

@@ -67,11 +67,11 @@ export function ScheduleView({
 
   // Form state
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [day, setDay] = useState<DayOfWeek>('Senin');
+  const [day, setDay] = useState<DayOfWeek | ''>('');
   const [jamKe, setJamKe] = useState('1-2');
   const [timeRange, setTimeRange] = useState('07:00 - 08:30');
-  const [className, setClassName] = useState(classOptions[0] || '');
-  const [subject, setSubject] = useState(settings.masterSubjects[0] || '');
+  const [className, setClassName] = useState('');
+  const [subject, setSubject] = useState('');
   const [teacherName, setTeacherName] = useState(teacherOptions[0] || '');
   const [room, setRoom] = useState('');
   const [notes, setNotes] = useState('');
@@ -81,8 +81,8 @@ export function ScheduleView({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Filter & Selection state
-  const [filterDay, setFilterDay] = useState<string>('ALL');
-  const [filterClass, setFilterClass] = useState<string>('ALL');
+  const [filterDay, setFilterDay] = useState<string>('');
+  const [filterClass, setFilterClass] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [formModalOpen, setFormModalOpen] = useState(false);
@@ -90,11 +90,11 @@ export function ScheduleView({
 
   const resetForm = () => {
     setEditingId(null);
-    setDay('Senin');
+    setDay('');
     setJamKe('1-2');
     setTimeRange('07:00 - 08:30');
-    setClassName(classOptions[0] || '');
-    setSubject(settings.masterSubjects[0] || '');
+    setClassName('');
+    setSubject('');
     setTeacherName(teacherOptions[0] || '');
     setRoom('');
     setNotes('');
@@ -102,7 +102,7 @@ export function ScheduleView({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!className || !subject || !teacherName.trim() || !jamKe.trim()) {
+    if (!day || !className || !subject || !teacherName.trim() || !jamKe.trim()) {
       onToast('error', 'Hari, Jam Ke, Kelas, Mata Pelajaran, dan Guru Pengampu wajib diisi.');
       return;
     }
@@ -165,8 +165,8 @@ export function ScheduleView({
         if (s.academicYear !== session.academicYear || s.semester !== session.semester) {
           return false;
         }
-        if (filterDay !== 'ALL' && s.day !== filterDay) return false;
-        if (filterClass !== 'ALL' && s.className !== filterClass) return false;
+        if (filterDay && filterDay !== 'ALL' && s.day !== filterDay) return false;
+        if (filterClass && filterClass !== 'ALL' && s.className !== filterClass) return false;
         if (q) {
           return (
             s.subject.toLowerCase().includes(q) ||
@@ -413,6 +413,7 @@ export function ScheduleView({
                 aria-label="Filter hari"
                 className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Hari--</option>
                 <option value="ALL">Semua Hari</option>
                 {DAYS_OF_WEEK.map((d) => (
                   <option key={d} value={d}>
@@ -427,6 +428,7 @@ export function ScheduleView({
                 aria-label="Filter kelas"
                 className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Kelas--</option>
                 <option value="ALL">Semua Kelas</option>
                 {classOptions.map((c) => (
                   <option key={c} value={c}>
@@ -640,9 +642,10 @@ export function ScheduleView({
               <select
                 id="sch-day"
                 value={day}
-                onChange={(e) => setDay(e.target.value as DayOfWeek)}
+                onChange={(e) => setDay(e.target.value as DayOfWeek | '')}
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Hari--</option>
                 {DAYS_OF_WEEK.map((d) => (
                   <option key={d} value={d}>
                     {d}
@@ -689,6 +692,7 @@ export function ScheduleView({
                 onChange={(e) => setClassName(e.target.value)}
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Kelas--</option>
                 {classOptions.map((c) => (
                   <option key={c} value={c}>
                     {c}
@@ -709,6 +713,7 @@ export function ScheduleView({
                 onChange={(e) => setSubject(e.target.value)}
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
+                <option value="">--Pilih Mapel--</option>
                 {settings.masterSubjects.map((s) => (
                   <option key={s} value={s}>
                     {s}
