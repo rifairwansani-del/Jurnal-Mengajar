@@ -26,6 +26,8 @@ import {
 } from '../utils/exportHelpers';
 import {
   ATTENDANCE_STATUS_META,
+  compareClassNames,
+  compareStudentsByClassAndAbsent,
   formatCompactDateId,
   formatShortDateId,
   getTodayISO,
@@ -91,8 +93,10 @@ export function JournalView({
 
   const classOptions = useMemo(() => {
     const set = new Set(settings.masterClasses);
-    students.forEach((s) => set.add(s.className));
-    return Array.from(set);
+    students.forEach((s) => {
+      if (s.className) set.add(s.className);
+    });
+    return Array.from(set).sort(compareClassNames);
   }, [settings.masterClasses, students]);
 
   useEffect(() => {
@@ -127,7 +131,7 @@ export function JournalView({
     () =>
       students
         .filter((s) => s.className === className)
-        .sort((a, b) => a.name.localeCompare(b.name)),
+        .sort(compareStudentsByClassAndAbsent),
     [students, className]
   );
 
@@ -402,10 +406,20 @@ export function JournalView({
       onToast('error', 'Format tidak dikenali. Gunakan urutan: Tanggal, Jam Ke, Kelas, Mapel, Materi, Kegiatan.');
       return;
     }
-    const added = onImportJournalsBatch(parsed);
-    setPasteText('');
-    setShowImportBox(false);
-    onToast('success', `${added} jurnal mengajar berhasil diimpor.`);
+    onConfirm({
+      title: 'Simpan Data Impor Jurnal?',
+      description: `Ditemukan ${parsed.length} entri jurnal mengajar siap disimpan. Apakah Anda ingin menyimpan data impor ini sekarang?`,
+      confirmLabel: 'Ya, Simpan Jurnal',
+      onConfirm: () => {
+        const added = onImportJournalsBatch(parsed);
+        setPasteText('');
+        setShowImportBox(false);
+        onToast('success', `${added} jurnal mengajar berhasil diimpor.`);
+      },
+      onCancel: () => {
+        onToast('info', 'Impor jurnal mengajar dibatalkan, data belum disimpan.');
+      },
+    });
   };
 
   const handleImportJournalFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -425,9 +439,19 @@ export function JournalView({
         onToast('error', 'Tidak ditemukan baris jurnal yang valid pada file.');
         return;
       }
-      const added = onImportJournalsBatch(parsed);
-      setShowImportBox(false);
-      onToast('success', `Impor "${file.name}" selesai: ${added} jurnal ditambahkan.`);
+      onConfirm({
+        title: 'Simpan Data Impor Jurnal?',
+        description: `File "${file.name}" berisi ${parsed.length} entri jurnal mengajar valid. Apakah Anda ingin menyimpan data impor ini?`,
+        confirmLabel: 'Ya, Simpan Jurnal',
+        onConfirm: () => {
+          const added = onImportJournalsBatch(parsed);
+          setShowImportBox(false);
+          onToast('success', `Impor "${file.name}" selesai: ${added} jurnal ditambahkan.`);
+        },
+        onCancel: () => {
+          onToast('info', `Impor file "${file.name}" dibatalkan, data belum disimpan.`);
+        },
+      });
     } catch {
       onToast('error', 'Gagal membaca file Excel/CSV.');
     } finally {
@@ -481,7 +505,7 @@ export function JournalView({
     () =>
       students
         .filter((s) => s.className === ledgerClass)
-        .sort((a, b) => a.name.localeCompare(b.name)),
+        .sort(compareStudentsByClassAndAbsent),
     [students, ledgerClass]
   );
 
@@ -712,6 +736,7 @@ export function JournalView({
                   orientation: cfg.orientation,
                   paperSize: cfg.paperSize,
                 });
+                onToast('info', 'Menyiapkan tampilan cetak riwayat jurnal...');
               }}
             />
           </div>
@@ -983,6 +1008,7 @@ export function JournalView({
                   orientation: cfg.orientation,
                   paperSize: cfg.paperSize,
                 });
+                onToast('info', `Menyiapkan tampilan cetak leger kehadiran ${ledgerClass}...`);
               }}
             />
           </div>

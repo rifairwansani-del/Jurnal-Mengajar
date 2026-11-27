@@ -11,7 +11,14 @@ import {
   X,
 } from 'lucide-react';
 import { AttendanceStatus, PortalDatabase, Student } from '../types';
-import { ATTENDANCE_STATUS_META, formatLongDateId, formatShortDateId } from '../utils/portalHelpers';
+import {
+  ATTENDANCE_STATUS_META,
+  formatLongDateId,
+  formatShortDateId,
+  getStudentDummyPhoto,
+  isGoogleDrivePhotoUrl,
+} from '../utils/portalHelpers';
+import { PersonAvatar } from './PersonAvatar';
 
 interface StudentDetailModalProps {
   student: Student | null;
@@ -167,17 +174,12 @@ export function StudentDetailModal({
         {/* Top Dark Navy Header */}
         <div className="bg-slate-900 px-6 py-5 text-white flex items-start justify-between gap-4">
           <div className="flex items-center gap-4 min-w-0">
-            {student.photo ? (
-              <img
-                src={student.photo}
-                alt={student.name}
-                className="w-16 h-16 rounded-2xl object-cover border-2 border-white/20 bg-white/10 shrink-0 shadow-md"
-              />
-            ) : (
-              <div className="w-16 h-16 rounded-2xl bg-indigo-500/30 border-2 border-white/20 text-white text-xl font-bold flex items-center justify-center shrink-0 shadow-md">
-                {student.name.slice(0, 2).toUpperCase()}
-              </div>
-            )}
+            <PersonAvatar
+              src={student.photo}
+              fallbackSrc={getStudentDummyPhoto(student.gender)}
+              alt={student.name}
+              className="w-16 h-16 rounded-2xl object-cover object-top border-2 border-white/20 bg-white/10 shrink-0 shadow-md"
+            />
 
             <div className="min-w-0">
               <h3
@@ -212,12 +214,17 @@ export function StudentDetailModal({
                 <span>{student.gender === 'P' ? 'Perempuan' : 'Laki-laki'}</span>
                 <span aria-hidden="true">·</span>
                 <span className="tabular-nums">Masuk {student.entryYear || '-'}</span>
-                {!student.photo && (
+                {isGoogleDrivePhotoUrl(student.photo) ? (
                   <>
                     <span aria-hidden="true">·</span>
-                    <span className="text-slate-400">Tanpa Foto</span>
+                    <span className="text-indigo-200">Foto Google Drive</span>
                   </>
-                )}
+                ) : !student.photo ? (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span className="text-slate-400">Foto Dummy</span>
+                  </>
+                ) : null}
               </div>
             </div>
           </div>

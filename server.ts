@@ -11,12 +11,14 @@ import {
   deleteAccountCredential,
   getCredentialMetaMap,
   getSanitizedPortalSnapshot,
+  mergeSyncedCredentials,
   normalizeAccountId,
   normalizeUsername,
   recordFailedLoginAttempt,
   savePortalSnapshot,
   upsertAccountCredential,
   type PortalSnapshotData,
+  type StoredCredential,
 } from './src/lib/server-store.ts';
 import { requireAuth, type AuthenticatedRequest } from './src/middleware/auth.ts';
 import type { AccountRole } from './src/types.ts';
@@ -204,7 +206,26 @@ async function startServer() {
       return;
     }
 
-    res.json({ ok: true, meta: result.meta });
+    res.json({
+      ok: true,
+      meta: result.meta,
+      credentialRecord: result.record,
+    });
+  });
+
+  app.post('/api/accounts/credentials-sync', requireAuth, (req: AuthenticatedRequest, res) => {
+    const caller = req.user;
+    if (!caller || !caller.isAdmin) {
+      res.status(403).json({ ok: false, error: 'Hanya Admin yang dapat menyinkronkan kredensial.' });
+      return;
+    }
+    const body = req.body as { credentials?: StoredCredential[] } | undefined;
+    const incoming = Array.isArray(body?.credentials) ? body.credentials : [];
+    const merged = mergeSyncedCredentials(incoming);
+    res.json({
+      ok: true,
+      credentials: merged,
+    });
   });
 
   app.delete('/api/accounts/credentials/:accountId', requireAuth, (req: AuthenticatedRequest, res) => {

@@ -1,11 +1,17 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import {
+  AlignCenter,
+  AlignJustify,
+  AlignLeft,
+  AlignRight,
+  Bold,
   Check,
   Download,
   FileSpreadsheet,
   Globe,
   ImagePlus,
+  Italic,
   Palette,
   Pencil,
   PenLine,
@@ -14,15 +20,35 @@ import {
   Save,
   Stamp,
   Trash2,
+  Type,
+  Underline,
   Upload,
   X,
 } from 'lucide-react';
-import { PortalDatabase, SemesterType, Student, SystemSettings, ThemeId } from '../types';
+import {
+  KopLineKey,
+  KopLineStyle,
+  KopTextAlign,
+  PortalDatabase,
+  PrintFontFamily,
+  SemesterType,
+  Student,
+  SystemSettings,
+  ThemeId,
+} from '../types';
 import { exportRowsToXlsx } from '../utils/exportHelpers';
 import {
+  compareStudentsByClassAndAbsent,
   compressImageFileToDataUrl,
+  DEFAULT_KOP_LINE_SPACING,
+  DEFAULT_KOP_LINE_STYLES,
   formatShortDateId,
+  getPrintFontCss,
   getTodayISO,
+  KOP_LINE_KEYS,
+  normalizeKopLineSpacing,
+  normalizeKopSurat,
+  resolveKopLineStyle,
 } from '../utils/portalHelpers';
 import { PORTAL_THEMES } from '../utils/themeConfig';
 import { ConfirmDialogState } from './FeedbackUI';
@@ -77,6 +103,7 @@ function MasterListCard({
   onBatchDelete,
   onInspectItem,
   onToast,
+  onConfirm,
 }: {
   title: string;
   subtitle: string;
@@ -93,6 +120,7 @@ function MasterListCard({
   onBatchDelete: (indices: number[]) => void;
   onInspectItem?: (item: string) => void;
   onToast: (type: 'success' | 'error' | 'info', message: string) => void;
+  onConfirm: (cfg: Omit<ConfirmDialogState, 'open'>) => void;
 }) {
   const [newValue, setNewValue] = useState('');
   const [editIdx, setEditIdx] = useState<number | null>(null);
@@ -106,7 +134,10 @@ function MasterListCard({
   const handleAdd = (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = newValue.trim();
-    if (!trimmed) return;
+    if (!trimmed) {
+      onToast('info', `Masukkan ${columnLabel.toLowerCase()} terlebih dahulu.`);
+      return;
+    }
     onAdd(trimmed);
     setNewValue('');
   };
@@ -152,11 +183,21 @@ function MasterListCard({
       onToast('info', 'Masukkan minimal 1 baris item untuk diimpor.');
       return;
     }
-    const addedCount = onBatchAdd(lines);
-    if (addedCount > 0) {
-      setImportText('');
-      setImportOpen(false);
-    }
+    onConfirm({
+      title: `Simpan Data Impor ${title}?`,
+      description: `Ditemukan ${lines.length} baris untuk ${title}. Apakah Anda ingin menyimpan data impor ini sekarang?`,
+      confirmLabel: 'Ya, Simpan Data',
+      onConfirm: () => {
+        const addedCount = onBatchAdd(lines);
+        if (addedCount > 0) {
+          setImportText('');
+          setImportOpen(false);
+        }
+      },
+      onCancel: () => {
+        onToast('info', `Impor ${title} dibatalkan, data belum disimpan.`);
+      },
+    });
   };
 
   const handleExcelFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -208,11 +249,21 @@ function MasterListCard({
         return;
       }
 
-      const addedCount = onBatchAdd(parsedValues, 'File Excel');
-      if (addedCount > 0) {
-        setImportText('');
-        setImportOpen(false);
-      }
+      onConfirm({
+        title: `Simpan Data Impor ${title}?`,
+        description: `File "${file.name}" berisi ${parsedValues.length} item untuk ${title}. Apakah Anda ingin menyimpan data impor ini?`,
+        confirmLabel: 'Ya, Simpan Data',
+        onConfirm: () => {
+          const addedCount = onBatchAdd(parsedValues, `File "${file.name}"`);
+          if (addedCount > 0) {
+            setImportText('');
+            setImportOpen(false);
+          }
+        },
+        onCancel: () => {
+          onToast('info', `Impor file "${file.name}" dibatalkan, data belum disimpan.`);
+        },
+      });
     } catch {
       onToast('error', 'Gagal membaca file Excel/CSV.');
     } finally {
@@ -535,6 +586,74 @@ export function SettingsView({
   const [schoolName, setSchoolName] = useState(settings.schoolName);
   const [email, setEmail] = useState(settings.email);
 
+  const prevSettingsRef = useRef(settings);
+
+  useEffect(() => {
+    const prev = prevSettingsRef.current;
+    if (prev === settings) return;
+
+    if (academicYear === prev.academicYear) setAcademicYear(settings.academicYear);
+    if (semester === prev.semester) setSemester(settings.semester);
+    if (signatureLocation === prev.signatureLocation) {
+      setSignatureLocation(settings.signatureLocation);
+    }
+    if (principalTitle === prev.principalTitle) setPrincipalTitle(settings.principalTitle);
+    if (principalName === prev.principalName) setPrincipalName(settings.principalName);
+    if (principalNip === prev.principalNip) setPrincipalNip(settings.principalNip);
+    if (principalSignatureImage === prev.principalSignatureImage) {
+      setPrincipalSignatureImage(settings.principalSignatureImage);
+    }
+    if (defaultSchoolStampImage === prev.defaultSchoolStampImage) {
+      setDefaultSchoolStampImage(settings.defaultSchoolStampImage);
+    }
+    if (themeId === prev.themeId) setThemeId(settings.themeId);
+    if (JSON.stringify(identity) === JSON.stringify(prev.identity)) {
+      setIdentity(settings.identity);
+    }
+    if (JSON.stringify(kop) === JSON.stringify(prev.kopSurat)) {
+      setKop(settings.kopSurat);
+    } else {
+      setKop((curr) => ({
+        ...curr,
+        logoLeftSize:
+          curr.logoLeftSize === prev.kopSurat.logoLeftSize
+            ? settings.kopSurat.logoLeftSize
+            : curr.logoLeftSize,
+        logoRightSize:
+          curr.logoRightSize === prev.kopSurat.logoRightSize
+            ? settings.kopSurat.logoRightSize
+            : curr.logoRightSize,
+        lineSpacing:
+          curr.lineSpacing === prev.kopSurat.lineSpacing
+            ? settings.kopSurat.lineSpacing
+            : curr.lineSpacing,
+      }));
+    }
+    if (teacherName === prev.teacherName) setTeacherName(settings.teacherName);
+    if (teacherNip === prev.teacherNip) setTeacherNip(settings.teacherNip);
+    if (schoolName === prev.schoolName) setSchoolName(settings.schoolName);
+    if (email === prev.email) setEmail(settings.email);
+
+    prevSettingsRef.current = settings;
+  }, [
+    settings,
+    academicYear,
+    semester,
+    signatureLocation,
+    principalTitle,
+    principalName,
+    principalNip,
+    principalSignatureImage,
+    defaultSchoolStampImage,
+    themeId,
+    identity,
+    kop,
+    teacherName,
+    teacherNip,
+    schoolName,
+    email,
+  ]);
+
   // Interactive Detail Modals for Master Kelas, Master Mapel & Detail Siswa
   const [detailClass, setDetailClass] = useState<string | null>(null);
   const [detailSubject, setDetailSubject] = useState<string | null>(null);
@@ -544,11 +663,7 @@ export function SettingsView({
     if (!detailClass) return [];
     return db.students
       .filter((s) => s.className === detailClass)
-      .sort(
-        (a, b) =>
-          (a.absentNo || '').localeCompare(b.absentNo || '', 'id', { numeric: true }) ||
-          a.name.localeCompare(b.name)
-      );
+      .sort(compareStudentsByClassAndAbsent);
   }, [db.students, detailClass]);
 
   const subjectJournals = useMemo(() => {
@@ -569,6 +684,7 @@ export function SettingsView({
       ...prev,
       themeId,
       identity: {
+        ...prev.identity,
         ...identity,
         webTitle: identity.webTitle.trim() || 'Portal E-Guru v10.2',
         sidebarTitle: identity.sidebarTitle.trim() || 'Portal E-Guru v10.2',
@@ -596,6 +712,7 @@ export function SettingsView({
     }
     const result = await compressImageFileToDataUrl(file, 360, 180000);
     setIdentity((prev) => ({ ...prev, sidebarLogo: result }));
+    onToast('success', 'Logo sidebar berhasil diunggah. Klik Simpan Identitas Portal.');
   };
 
   const handleStampUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -607,6 +724,7 @@ export function SettingsView({
     }
     const result = await compressImageFileToDataUrl(file, 360, 180000);
     setDefaultSchoolStampImage(result);
+    onToast('success', 'Stempel sekolah default berhasil diunggah. Klik Simpan untuk menerapkan.');
   };
 
   const handleSavePeriodAndOfficials = (e: React.FormEvent) => {
@@ -629,9 +747,35 @@ export function SettingsView({
     e.preventDefault();
     onUpdateSettings((prev) => ({
       ...prev,
-      kopSurat: { ...kop },
+      kopSurat: normalizeKopSurat(kop, prev.kopSurat),
     }));
     onToast('success', 'Pengaturan Kop Surat Dinas berhasil disimpan.');
+  };
+
+  const updateKopLineStyle = (
+    key: KopLineKey,
+    patch: Partial<KopLineStyle>
+  ) => {
+    setKop((prev) => {
+      const current = resolveKopLineStyle(prev, key);
+      return {
+        ...prev,
+        lineStyles: {
+          ...(prev.lineStyles || {}),
+          [key]: { ...current, ...patch },
+        },
+      };
+    });
+  };
+
+  const applyKopAlignAll = (align: KopTextAlign) => {
+    setKop((prev) => {
+      const nextStyles = { ...(prev.lineStyles || {}) } as Record<KopLineKey, KopLineStyle>;
+      KOP_LINE_KEYS.forEach((k) => {
+        nextStyles[k] = { ...resolveKopLineStyle(prev, k), align };
+      });
+      return { ...prev, lineStyles: nextStyles };
+    });
   };
 
   const handleLogoUpload = async (
@@ -646,6 +790,10 @@ export function SettingsView({
     }
     const result = await compressImageFileToDataUrl(file, 360, 180000);
     setKop((prev) => ({ ...prev, [side]: result }));
+    onToast(
+      'success',
+      `Logo ${side === 'logoLeft' ? 'kiri' : 'kanan'} kop surat berhasil diunggah. Klik Simpan Pengaturan Kop Surat.`
+    );
   };
 
   const handleSaveProfileAccount = (e: React.FormEvent) => {
@@ -759,27 +907,33 @@ export function SettingsView({
         onToast('error', 'Format file backup JSON tidak valid.');
         return;
       }
-      onRestoreDatabase(parsed);
-      setAcademicYear(parsed.settings.academicYear);
-      setSemester(parsed.settings.semester);
-      setSignatureLocation(parsed.settings.signatureLocation);
-      setPrincipalTitle(parsed.settings.principalTitle);
-      setPrincipalName(parsed.settings.principalName);
-      setPrincipalNip(parsed.settings.principalNip);
-      setPrincipalSignatureImage(parsed.settings.principalSignatureImage || '');
-      setDefaultSchoolStampImage(parsed.settings.defaultSchoolStampImage || '');
-      if (parsed.settings.themeId) setThemeId(parsed.settings.themeId);
-      if (parsed.settings.identity) setIdentity(parsed.settings.identity);
-      setKop({
-        ...parsed.settings.kopSurat,
-        logoLeftSize: parsed.settings.kopSurat.logoLeftSize ?? 72,
-        logoRightSize: parsed.settings.kopSurat.logoRightSize ?? 72,
+      onConfirm({
+        title: 'Simpan & Pulihkan Data Backup JSON?',
+        description: `File "${file.name}" berisi ${parsed.students.length} siswa, ${(parsed.teachers || []).length} guru, dan ${(parsed.journals || []).length} jurnal. Simpan dan timpa seluruh data Cloud Firestore dengan backup ini?`,
+        confirmLabel: 'Ya, Simpan & Pulihkan',
+        onConfirm: () => {
+          onRestoreDatabase(parsed);
+          setAcademicYear(parsed.settings.academicYear);
+          setSemester(parsed.settings.semester);
+          setSignatureLocation(parsed.settings.signatureLocation);
+          setPrincipalTitle(parsed.settings.principalTitle);
+          setPrincipalName(parsed.settings.principalName);
+          setPrincipalNip(parsed.settings.principalNip);
+          setPrincipalSignatureImage(parsed.settings.principalSignatureImage || '');
+          setDefaultSchoolStampImage(parsed.settings.defaultSchoolStampImage || '');
+          if (parsed.settings.themeId) setThemeId(parsed.settings.themeId);
+          if (parsed.settings.identity) setIdentity(parsed.settings.identity);
+          setKop(normalizeKopSurat(parsed.settings.kopSurat, settings.kopSurat));
+          setTeacherName(parsed.settings.teacherName);
+          setTeacherNip(parsed.settings.teacherNip);
+          setSchoolName(parsed.settings.schoolName);
+          setEmail(parsed.settings.email);
+          onToast('success', `Backup "${file.name}" berhasil dipulihkan & disimpan ke Cloud Firestore.`);
+        },
+        onCancel: () => {
+          onToast('info', `Pemulihan backup "${file.name}" dibatalkan, data tidak diubah.`);
+        },
       });
-      setTeacherName(parsed.settings.teacherName);
-      setTeacherNip(parsed.settings.teacherNip);
-      setSchoolName(parsed.settings.schoolName);
-      setEmail(parsed.settings.email);
-      onToast('success', 'Seluruh data berhasil dipulihkan ke Cloud Firestore.');
     } catch {
       onToast('error', 'Gagal membaca file JSON backup.');
     } finally {
@@ -936,7 +1090,10 @@ export function SettingsView({
                     {identity.sidebarLogo && (
                       <button
                         type="button"
-                        onClick={() => setIdentity((p) => ({ ...p, sidebarLogo: '' }))}
+                        onClick={() => {
+                          setIdentity((p) => ({ ...p, sidebarLogo: '' }));
+                          onToast('info', 'Logo sidebar dihapus dari pratinjau.');
+                        }}
                         className="px-2.5 py-2 rounded-lg text-xs text-rose-600 hover:bg-rose-50"
                       >
                         Reset
@@ -1126,7 +1283,10 @@ export function SettingsView({
                     {principalSignatureImage && (
                       <button
                         type="button"
-                        onClick={() => setPrincipalSignatureImage('')}
+                        onClick={() => {
+                          setPrincipalSignatureImage('');
+                          onToast('info', 'TTD Kepala Sekolah dihapus dari pratinjau.');
+                        }}
                         className="text-[11px] text-rose-600 hover:underline"
                       >
                         Hapus
@@ -1160,7 +1320,10 @@ export function SettingsView({
                     {defaultSchoolStampImage && (
                       <button
                         type="button"
-                        onClick={() => setDefaultSchoolStampImage('')}
+                        onClick={() => {
+                          setDefaultSchoolStampImage('');
+                          onToast('info', 'Stempel sekolah dihapus dari pratinjau.');
+                        }}
                         className="text-[11px] text-rose-600 hover:underline"
                       >
                         Hapus
@@ -1288,6 +1451,152 @@ export function SettingsView({
         <form onSubmit={handleSaveKopSurat} className="p-5 space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             <div className="lg:col-span-7 space-y-3">
+              {/* Pengaturan Jenis Huruf & Perataan Global */}
+              <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl border border-slate-200 bg-slate-50/80">
+                <div className="flex items-center gap-2">
+                  <Type className="w-4 h-4 text-indigo-600 shrink-0" />
+                  <label htmlFor="kop-font-family" className="text-xs font-semibold text-slate-700 whitespace-nowrap">
+                    Font Kop Surat:
+                  </label>
+                  <select
+                    id="kop-font-family"
+                    value={kop.fontFamily || 'Times New Roman'}
+                    onChange={(e) =>
+                      setKop((prev) => ({ ...prev, fontFamily: e.target.value as PrintFontFamily }))
+                    }
+                    className="px-2.5 py-1.5 text-xs font-medium border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+                  >
+                    <option value="Times New Roman">Times New Roman</option>
+                    <option value="Tahoma">Tahoma</option>
+                    <option value="Arial">Arial</option>
+                    <option value="Verdana">Verdana</option>
+                    <option value="Calibri">Calibri</option>
+                    <option value="Georgia">Georgia</option>
+                  </select>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] font-semibold text-slate-500">Semua Baris:</span>
+                  <div className="inline-flex rounded-lg border border-slate-200 bg-white overflow-hidden">
+                    {(
+                      [
+                        { align: 'left' as KopTextAlign, label: 'Rata Kiri (Left)', Icon: AlignLeft },
+                        { align: 'center' as KopTextAlign, label: 'Rata Tengah (Center)', Icon: AlignCenter },
+                        { align: 'right' as KopTextAlign, label: 'Rata Kanan (Right)', Icon: AlignRight },
+                        { align: 'justify' as KopTextAlign, label: 'Rata Kanan-Kiri (Justify)', Icon: AlignJustify },
+                      ]
+                    ).map(({ align, label, Icon }) => {
+                      const allMatch = KOP_LINE_KEYS.every(
+                        (k) => resolveKopLineStyle(kop, k).align === align
+                      );
+                      return (
+                        <button
+                          key={align}
+                          type="button"
+                          onClick={() => applyKopAlignAll(align)}
+                          title={label}
+                          aria-label={label}
+                          className={`p-1.5 transition-colors ${
+                            allMatch
+                              ? 'bg-indigo-600 text-white'
+                              : 'text-slate-600 hover:bg-slate-100'
+                          }`}
+                        >
+                          <Icon className="w-3.5 h-3.5" />
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setKop((prev) => ({
+                        ...prev,
+                        fontFamily: 'Times New Roman',
+                        lineSpacing: DEFAULT_KOP_LINE_SPACING,
+                        lineStyles: { ...DEFAULT_KOP_LINE_STYLES },
+                      }));
+                      onToast('info', 'Gaya, ukuran huruf & spasi baris kop surat direset ke standar.');
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-[11px] font-semibold text-slate-600 inline-flex items-center gap-1"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    Reset Font
+                  </button>
+                </div>
+
+                {/* Pengaturan Jarak Antar Baris / Spasi Kop Surat */}
+                <div className="w-full pt-2.5 mt-0.5 border-t border-slate-200/80 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-slate-700 whitespace-nowrap">
+                      Jarak Antar Baris (Spasi):
+                    </span>
+                    <span className="px-2 py-0.5 rounded bg-indigo-50 border border-indigo-200 text-[11px] font-mono-tabular font-semibold text-indigo-700">
+                      {normalizeKopLineSpacing(kop.lineSpacing).toFixed(2)}x
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 flex-1 min-w-[210px] max-w-sm">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setKop((prev) => ({
+                          ...prev,
+                          lineSpacing: normalizeKopLineSpacing(
+                            normalizeKopLineSpacing(prev.lineSpacing) - 0.05
+                          ),
+                        }))
+                      }
+                      aria-label="Rapatkan spasi baris kop surat"
+                      className="w-6 h-6 rounded border border-slate-200 bg-white hover:bg-slate-100 text-xs font-bold text-slate-700 shrink-0"
+                    >
+                      -
+                    </button>
+                    <input
+                      type="range"
+                      min={0.85}
+                      max={2.4}
+                      step={0.05}
+                      value={normalizeKopLineSpacing(kop.lineSpacing)}
+                      onChange={(e) =>
+                        setKop((prev) => ({
+                          ...prev,
+                          lineSpacing: normalizeKopLineSpacing(e.target.value),
+                        }))
+                      }
+                      aria-label="Slider jarak antar baris kop surat"
+                      className="flex-1 min-w-0 accent-indigo-600"
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setKop((prev) => ({
+                          ...prev,
+                          lineSpacing: normalizeKopLineSpacing(
+                            normalizeKopLineSpacing(prev.lineSpacing) + 0.05
+                          ),
+                        }))
+                      }
+                      aria-label="Renggangkan spasi baris kop surat"
+                      className="w-6 h-6 rounded border border-slate-200 bg-white hover:bg-slate-100 text-xs font-bold text-slate-700 shrink-0"
+                    >
+                      +
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setKop((prev) => ({
+                          ...prev,
+                          lineSpacing: DEFAULT_KOP_LINE_SPACING,
+                        }))
+                      }
+                      className="px-2 py-1 rounded border border-slate-200 bg-white hover:bg-slate-100 text-[11px] font-medium text-slate-600 whitespace-nowrap"
+                    >
+                      1.25x
+                    </button>
+                  </div>
+                </div>
+              </div>
+
               {[
                 { key: 'line1' as const, label: 'Baris 1 (Pemerintah / Yayasan)' },
                 { key: 'line2' as const, label: 'Baris 2 (Dinas / Instansi Induk)' },
@@ -1295,19 +1604,140 @@ export function SettingsView({
                 { key: 'line4' as const, label: 'Baris 4 (Alamat Jalan & Kode Pos)' },
                 { key: 'line5' as const, label: 'Baris 5 (Telepon & Laman)' },
                 { key: 'line6' as const, label: 'Baris 6 (Email & NPSN)' },
-              ].map((field) => (
-                <div key={field.key}>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    {field.label}
-                  </label>
-                  <input
-                    type="text"
-                    value={kop[field.key]}
-                    onChange={(e) => setKop((prev) => ({ ...prev, [field.key]: e.target.value }))}
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600"
-                  />
-                </div>
-              ))}
+              ].map((field) => {
+                const style = resolveKopLineStyle(kop, field.key);
+                return (
+                  <div key={field.key} className="space-y-1.5 p-2.5 rounded-lg border border-slate-200/80 bg-slate-50/40">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <label className="text-xs font-semibold text-slate-700">
+                        {field.label}
+                      </label>
+
+                      {/* Mini Toolbar: B, I, U, Ukuran Font, Left/Center/Right/Justify */}
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <div className="inline-flex rounded-md border border-slate-200 bg-white overflow-hidden">
+                          <button
+                            type="button"
+                            onClick={() => updateKopLineStyle(field.key, { bold: !style.bold })}
+                            title="Tebal (Bold)"
+                            aria-label={`${field.label} Bold`}
+                            className={`px-2 py-1 text-xs font-bold transition-colors ${
+                              style.bold
+                                ? 'bg-indigo-600 text-white'
+                                : 'text-slate-600 hover:bg-slate-100'
+                            }`}
+                          >
+                            <Bold className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => updateKopLineStyle(field.key, { italic: !style.italic })}
+                            title="Miring (Italic)"
+                            aria-label={`${field.label} Italic`}
+                            className={`px-2 py-1 text-xs transition-colors border-l border-slate-200 ${
+                              style.italic
+                                ? 'bg-indigo-600 text-white'
+                                : 'text-slate-600 hover:bg-slate-100'
+                            }`}
+                          >
+                            <Italic className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => updateKopLineStyle(field.key, { underline: !style.underline })}
+                            title="Garis Bawah (Underline)"
+                            aria-label={`${field.label} Underline`}
+                            className={`px-2 py-1 text-xs transition-colors border-l border-slate-200 ${
+                              style.underline
+                                ? 'bg-indigo-600 text-white'
+                                : 'text-slate-600 hover:bg-slate-100'
+                            }`}
+                          >
+                            <Underline className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+
+                        <div className="inline-flex items-center rounded-md border border-slate-200 bg-white px-1.5 py-0.5 gap-1">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateKopLineStyle(field.key, {
+                                fontSize: Math.max(7, style.fontSize - 1),
+                              })
+                            }
+                            aria-label={`Perkecil font ${field.label}`}
+                            className="w-4 h-5 text-xs font-bold text-slate-600 hover:text-indigo-700"
+                          >
+                            -
+                          </button>
+                          <input
+                            type="number"
+                            min={7}
+                            max={28}
+                            value={style.fontSize}
+                            onChange={(e) => {
+                              const n = Number(e.target.value);
+                              if (Number.isFinite(n)) {
+                                updateKopLineStyle(field.key, {
+                                  fontSize: Math.max(7, Math.min(28, Math.round(n))),
+                                });
+                              }
+                            }}
+                            aria-label={`Ukuran font ${field.label} (pt)`}
+                            className="w-9 text-center text-[11px] font-mono-tabular font-semibold text-slate-800 focus:outline-none"
+                          />
+                          <span className="text-[10px] text-slate-400">pt</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateKopLineStyle(field.key, {
+                                fontSize: Math.min(28, style.fontSize + 1),
+                              })
+                            }
+                            aria-label={`Perbesar font ${field.label}`}
+                            className="w-4 h-5 text-xs font-bold text-slate-600 hover:text-indigo-700"
+                          >
+                            +
+                          </button>
+                        </div>
+
+                        <div className="inline-flex rounded-md border border-slate-200 bg-white overflow-hidden">
+                          {(
+                            [
+                              { align: 'left' as KopTextAlign, label: 'Left', Icon: AlignLeft },
+                              { align: 'center' as KopTextAlign, label: 'Center', Icon: AlignCenter },
+                              { align: 'right' as KopTextAlign, label: 'Right', Icon: AlignRight },
+                              { align: 'justify' as KopTextAlign, label: 'Justify', Icon: AlignJustify },
+                            ]
+                          ).map(({ align, label, Icon }, idx) => (
+                            <button
+                              key={align}
+                              type="button"
+                              onClick={() => updateKopLineStyle(field.key, { align })}
+                              title={`${label} (${field.label})`}
+                              aria-label={`${field.label} ${label}`}
+                              className={`p-1 transition-colors ${idx > 0 ? 'border-l border-slate-200' : ''} ${
+                                style.align === align
+                                  ? 'bg-indigo-600 text-white'
+                                  : 'text-slate-600 hover:bg-slate-100'
+                              }`}
+                            >
+                              <Icon className="w-3.5 h-3.5" />
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <input
+                      type="text"
+                      value={kop[field.key]}
+                      onChange={(e) => setKop((prev) => ({ ...prev, [field.key]: e.target.value }))}
+                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+                    />
+                  </div>
+                );
+              })}
             </div>
 
             <div className="lg:col-span-5 space-y-4">
@@ -1336,7 +1766,10 @@ export function SettingsView({
                     {kop.logoLeft && (
                       <button
                         type="button"
-                        onClick={() => setKop((prev) => ({ ...prev, logoLeft: '' }))}
+                        onClick={() => {
+                          setKop((prev) => ({ ...prev, logoLeft: '' }));
+                          onToast('info', 'Logo kiri kop surat dihapus dari pratinjau.');
+                        }}
                         className="px-2 py-1.5 rounded-md text-xs text-rose-600 hover:bg-rose-50"
                       >
                         Hapus
@@ -1415,7 +1848,10 @@ export function SettingsView({
                     {kop.logoRight && (
                       <button
                         type="button"
-                        onClick={() => setKop((prev) => ({ ...prev, logoRight: '' }))}
+                        onClick={() => {
+                          setKop((prev) => ({ ...prev, logoRight: '' }));
+                          onToast('info', 'Logo kanan kop surat dihapus dari pratinjau.');
+                        }}
                         className="px-2 py-1.5 rounded-md text-xs text-rose-600 hover:bg-rose-50"
                       >
                         Hapus
@@ -1475,9 +1911,10 @@ export function SettingsView({
               <div className="flex items-center justify-between gap-2 pt-1">
                 <button
                   type="button"
-                  onClick={() =>
-                    setKop((prev) => ({ ...prev, logoLeftSize: 72, logoRightSize: 72 }))
-                  }
+                  onClick={() => {
+                    setKop((prev) => ({ ...prev, logoLeftSize: 72, logoRightSize: 72 }));
+                    onToast('info', 'Ukuran logo kop surat dikembalikan ke 72px.');
+                  }}
                   className="px-3 py-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 whitespace-nowrap"
                 >
                   Reset Ukuran Logo
@@ -1498,7 +1935,10 @@ export function SettingsView({
             <p className="text-xs font-semibold text-slate-500 mb-3">
               Pratinjau Langsung (Live Preview) Kop Surat Resmi
             </p>
-            <div className="bg-white p-5 border border-slate-200 text-black font-serif overflow-x-auto">
+            <div
+              className="bg-white p-5 border border-slate-200 text-black overflow-x-auto"
+              style={{ fontFamily: getPrintFontCss(kop.fontFamily) }}
+            >
               <div className="pb-3 border-b-4 border-double border-black flex items-center justify-between gap-4">
                 <div
                   style={{
@@ -1519,13 +1959,32 @@ export function SettingsView({
                     />
                   )}
                 </div>
-                <div className="flex-1 text-center leading-tight">
-                  {kop.line1 && <p className="text-xs sm:text-sm uppercase">{kop.line1}</p>}
-                  {kop.line2 && <p className="text-sm sm:text-base font-bold uppercase">{kop.line2}</p>}
-                  {kop.line3 && <p className="text-base sm:text-lg font-bold uppercase">{kop.line3}</p>}
-                  {kop.line4 && <p className="text-[11px] sm:text-xs mt-1">{kop.line4}</p>}
-                  {kop.line5 && <p className="text-[11px] sm:text-xs">{kop.line5}</p>}
-                  {kop.line6 && <p className="text-[11px] sm:text-xs">{kop.line6}</p>}
+                <div
+                  className="flex-1 min-w-0"
+                  style={{ lineHeight: normalizeKopLineSpacing(kop.lineSpacing) }}
+                >
+                  {KOP_LINE_KEYS.map((key, idx) => {
+                    const text = kop[key];
+                    if (!text) return null;
+                    const s = resolveKopLineStyle(kop, key);
+                    return (
+                      <p
+                        key={key}
+                        style={{
+                          fontSize: `${s.fontSize}pt`,
+                          fontWeight: s.bold ? 700 : 400,
+                          fontStyle: s.italic ? 'italic' : 'normal',
+                          textDecoration: s.underline ? 'underline' : 'none',
+                          textAlign: s.align,
+                          ...(s.align === 'justify' ? { textAlignLast: 'justify' as const } : {}),
+                          ...(idx < 3 ? { textTransform: 'uppercase' as const } : {}),
+                          ...(key === 'line4' ? { marginTop: '3px' } : {}),
+                        }}
+                      >
+                        {text}
+                      </p>
+                    );
+                  })}
                 </div>
                 <div
                   style={{
@@ -1576,6 +2035,7 @@ export function SettingsView({
             onBatchDelete={(idxs) => batchDeleteMasterItems('masterClasses', idxs)}
             onInspectItem={(cls) => setDetailClass(cls)}
             onToast={onToast}
+            onConfirm={onConfirm}
           />
           <MasterListCard
             title="Master Mata Pelajaran"
@@ -1592,6 +2052,7 @@ export function SettingsView({
             onBatchDelete={(idxs) => batchDeleteMasterItems('masterSubjects', idxs)}
             onInspectItem={(subj) => setDetailSubject(subj)}
             onToast={onToast}
+            onConfirm={onConfirm}
           />
           <MasterListCard
             title="Master Jenis Ujian"
@@ -1607,6 +2068,7 @@ export function SettingsView({
             onDelete={(i) => deleteMasterItem('masterExamTypes', i)}
             onBatchDelete={(idxs) => batchDeleteMasterItems('masterExamTypes', idxs)}
             onToast={onToast}
+            onConfirm={onConfirm}
           />
           <MasterListCard
             title="Master Tahun Ajaran"
@@ -1623,6 +2085,7 @@ export function SettingsView({
             onDelete={(i) => deleteMasterItem('masterAcademicYears', i)}
             onBatchDelete={(idxs) => batchDeleteMasterItems('masterAcademicYears', idxs)}
             onToast={onToast}
+            onConfirm={onConfirm}
           />
         </div>
       </section>
@@ -1678,7 +2141,15 @@ export function SettingsView({
         title="Tanda Tangan Digital Kepala Sekolah"
         initialImage={principalSignatureImage}
         onClose={() => setSigModalOpen(false)}
-        onSave={(dataUrl) => setPrincipalSignatureImage(dataUrl)}
+        onSave={(dataUrl) => {
+          setPrincipalSignatureImage(dataUrl);
+          onToast(
+            dataUrl ? 'success' : 'info',
+            dataUrl
+              ? 'TTD Kepala Sekolah disimpan ke pratinjau. Klik Simpan untuk menerapkan.'
+              : 'TTD Kepala Sekolah dikosongkan.'
+          );
+        }}
       />
 
       {/* Modal Detail Rombel (Master Daftar Kelas) */}

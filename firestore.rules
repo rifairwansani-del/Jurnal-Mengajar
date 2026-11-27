@@ -113,6 +113,29 @@ service cloud.firestore {
         && isStr(data.schoolStampImage, 350000);
     }
 
+    function isValidCredentialSync(data) {
+      return data.keys().hasAll([
+          'accountId', 'username', 'email', 'name', 'role',
+          'nip', 'status', 'passwordHash', 'salt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'accountId', 'username', 'email', 'name', 'role',
+          'nip', 'status', 'passwordHash', 'salt', 'updatedAt',
+          'serverCreatedAt', 'serverUpdatedAt'
+        ])
+        && isValidEmailId(data.accountId)
+        && isStr(data.username, 64)
+        && isReqStr(data.email, 160)
+        && data.email.lower() == data.accountId
+        && isReqStr(data.name, 160)
+        && data.role in ['Admin', 'Guru Mapel', 'Wali Kelas', 'Guru BK', 'Kepala Sekolah']
+        && isStr(data.nip, 64)
+        && data.status in ['Aktif', 'Nonaktif']
+        && isStr(data.passwordHash, 256)
+        && isStr(data.salt, 128)
+        && isStr(data.updatedAt, 64);
+    }
+
     function isValidStudent(data) {
       return data.keys().hasAll([
           'id', 'nis', 'nisn', 'name', 'className', 'absentNo', 'birthPlace', 'birthDate',
@@ -319,6 +342,22 @@ service cloud.firestore {
                 && authEmail() == accountId
                 && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastLogin', 'name', 'nip', 'signatureImage', 'schoolStampImage', 'serverUpdatedAt'])));
       allow delete: if isAdmin() && accountId != 'rifairwansani@sma1kudus.sch.id';
+    }
+
+    match /credential_sync/{accountId} {
+      allow get: if isAdmin() && isValidEmailId(accountId);
+      allow list: if isAdmin();
+      allow create: if isAdmin()
+        && isValidEmailId(accountId)
+        && isValidCredentialSync(request.resource.data)
+        && request.resource.data.accountId == accountId
+        && validServerTimestampsOnCreate(request.resource.data);
+      allow update: if isAdmin()
+        && isValidEmailId(accountId)
+        && isValidCredentialSync(request.resource.data)
+        && request.resource.data.accountId == accountId
+        && validServerTimestampsOnUpdate(request.resource.data, resource.data);
+      allow delete: if isAdmin() && isValidEmailId(accountId);
     }
 
     match /students/{studentId} {

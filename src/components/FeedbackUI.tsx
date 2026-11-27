@@ -17,7 +17,7 @@ export function ToastContainer({
 
   return (
     <div
-      className="no-print fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none px-4 sm:px-0"
+      className="no-print fixed bottom-4 right-4 z-[80] flex flex-col gap-2 max-w-sm w-full pointer-events-none px-4 sm:px-0"
       aria-live="polite"
     >
       {toasts.map((t) => {
@@ -67,8 +67,10 @@ export interface ConfirmDialogState {
   title: string;
   description: string;
   confirmLabel?: string;
+  cancelLabel?: string;
   danger?: boolean;
   onConfirm: () => void;
+  onCancel?: () => void;
 }
 
 export function ConfirmModal({
@@ -81,7 +83,7 @@ export function ConfirmModal({
   if (!state || !state.open) return null;
 
   return (
-    <div className="no-print fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs">
+    <div className="no-print fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs">
       <div
         role="dialog"
         aria-modal="true"
@@ -92,10 +94,13 @@ export function ConfirmModal({
         <div className="mt-6 flex items-center justify-end gap-3">
           <button
             type="button"
-            onClick={onClose}
+            onClick={() => {
+              state.onCancel?.();
+              onClose();
+            }}
             className="px-4 py-2 text-sm font-medium rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0"
           >
-            Batal
+            {state.cancelLabel || 'Batal'}
           </button>
           <button
             type="button"

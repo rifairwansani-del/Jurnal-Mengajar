@@ -17,7 +17,7 @@ import {
   exportRowsToXlsx,
   printDatasetExact,
 } from '../utils/exportHelpers';
-import { getTodayISO } from '../utils/portalHelpers';
+import { compareClassNames, getTodayISO } from '../utils/portalHelpers';
 import { ConfirmDialogState } from './FeedbackUI';
 import { FormModal } from './FormModal';
 import { TableExportToolbar } from './TableExportToolbar';
@@ -50,8 +50,10 @@ export function ScheduleView({
 
   const classOptions = useMemo(() => {
     const set = new Set(settings.masterClasses);
-    students.forEach((s) => set.add(s.className));
-    return Array.from(set);
+    students.forEach((s) => {
+      if (s.className) set.add(s.className);
+    });
+    return Array.from(set).sort(compareClassNames);
   }, [settings.masterClasses, students]);
 
   const teacherOptions = useMemo(() => {
@@ -304,10 +306,20 @@ export function ScheduleView({
       onToast('error', 'Format jadwal tidak valid.');
       return;
     }
-    const count = onImportSchedulesBatch(parsed);
-    setPasteText('');
-    setImportModalOpen(false);
-    onToast('success', `${count} jadwal mengajar berhasil diimpor.`);
+    onConfirm({
+      title: 'Simpan Data Impor Jadwal?',
+      description: `Ditemukan ${parsed.length} baris jadwal mengajar siap disimpan. Apakah Anda ingin menyimpan data impor ini sekarang?`,
+      confirmLabel: 'Ya, Simpan Jadwal',
+      onConfirm: () => {
+        const count = onImportSchedulesBatch(parsed);
+        setPasteText('');
+        setImportModalOpen(false);
+        onToast('success', `${count} jadwal mengajar berhasil diimpor.`);
+      },
+      onCancel: () => {
+        onToast('info', 'Impor jadwal mengajar dibatalkan, data belum disimpan.');
+      },
+    });
   };
 
   const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -323,9 +335,19 @@ export function ScheduleView({
         onToast('error', 'Tidak ditemukan baris jadwal yang valid.');
         return;
       }
-      const count = onImportSchedulesBatch(parsed);
-      setImportModalOpen(false);
-      onToast('success', `${count} jadwal berhasil diimpor dari "${file.name}".`);
+      onConfirm({
+        title: 'Simpan Data Impor Jadwal?',
+        description: `File "${file.name}" berisi ${parsed.length} jadwal mengajar valid. Apakah Anda ingin menyimpan data impor ini?`,
+        confirmLabel: 'Ya, Simpan Jadwal',
+        onConfirm: () => {
+          const count = onImportSchedulesBatch(parsed);
+          setImportModalOpen(false);
+          onToast('success', `${count} jadwal berhasil diimpor dari "${file.name}".`);
+        },
+        onCancel: () => {
+          onToast('info', `Impor file "${file.name}" dibatalkan, data belum disimpan.`);
+        },
+      });
     } catch {
       onToast('error', 'Gagal membaca file Excel/CSV.');
     } finally {
@@ -485,6 +507,7 @@ export function ScheduleView({
                   orientation: cfg.orientation,
                   paperSize: cfg.paperSize,
                 });
+                onToast('info', 'Menyiapkan tampilan cetak jadwal mengajar...');
               }}
             />
           </div>

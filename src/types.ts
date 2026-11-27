@@ -62,12 +62,21 @@ export type ReportSectionId =
   | 'grades_remedial'
   | 'grades_leger'
   | 'students_roster'
-  | 'teacher_activity';
+  | 'teacher_activity'
+  | 'charts';
 export type ReportType = ReportSectionId | 'package';
+
+export type ReportChartId =
+  | 'bar_class'
+  | 'line_trend'
+  | 'doughnut_attendance'
+  | 'hbar_subject'
+  | 'pie_kkm';
 
 export interface ReportPrintPreferences {
   reportType?: ReportType;
   selectedReportTypes: ReportSectionId[];
+  selectedChartTypes?: ReportChartId[];
   selectedClasses: string[];
   subjectFilter: string;
   startDate: string;
@@ -217,6 +226,18 @@ export interface GradeEntry {
   updatedAt: string;
 }
 
+export type KopTextAlign = 'left' | 'center' | 'right' | 'justify';
+
+export type KopLineKey = 'line1' | 'line2' | 'line3' | 'line4' | 'line5' | 'line6';
+
+export interface KopLineStyle {
+  fontSize: number; // pt (7-28)
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+  align: KopTextAlign;
+}
+
 export interface KopSuratSettings {
   line1: string;
   line2: string;
@@ -228,6 +249,9 @@ export interface KopSuratSettings {
   logoRight: string;
   logoLeftSize?: number;  // px width/height (28-150, default 72)
   logoRightSize?: number; // px width/height (28-150, default 72)
+  fontFamily?: PrintFontFamily;
+  lineSpacing?: number;   // CSS line-height multiplier (0.85-2.4, default 1.25)
+  lineStyles?: Partial<Record<KopLineKey, KopLineStyle>>;
 }
 
 export interface SystemSettings {

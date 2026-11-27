@@ -17,9 +17,15 @@ import {
   exportRowsToXlsx,
   printDatasetExact,
 } from '../utils/exportHelpers';
-import { compressImageFileToDataUrl, getTodayISO } from '../utils/portalHelpers';
+import {
+  compressImageFileToDataUrl,
+  getTeacherDummyPhoto,
+  getTodayISO,
+  normalizePhotoInputUrl,
+} from '../utils/portalHelpers';
 import { ConfirmDialogState } from './FeedbackUI';
 import { FormModal } from './FormModal';
+import { PersonAvatar } from './PersonAvatar';
 import { TableExportToolbar } from './TableExportToolbar';
 
 interface TeachersViewProps {
@@ -111,6 +117,7 @@ export function TeachersView({
     }
     const compressed = await compressImageFileToDataUrl(file, 420, 200000);
     setPhoto(compressed);
+    onToast('success', 'Foto guru berhasil diunggah ke pratinjau. Klik Simpan untuk menyimpan.');
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -131,7 +138,7 @@ export function TeachersView({
       employmentStatus,
       status,
       address: address.trim(),
-      photo,
+      photo: normalizePhotoInputUrl(photo),
     });
     onToast(
       'success',
@@ -258,7 +265,7 @@ export function TeachersView({
   const handleDownloadTemplate = () => {
     exportRowsToXlsx(
       'Template Guru',
-      TEACHER_IMPORT_HEADERS,
+      [...TEACHER_IMPORT_HEADERS, 'Link Foto'],
       [
         [
           '19870615 201402 1 002',
@@ -271,6 +278,7 @@ export function TeachersView({
           'bambang@sekolah.sch.id',
           '081234567800',
           'Jl. Kartini No. 12, Kudus',
+          '',
         ],
       ],
       'Template_Impor_Guru_E-Guru.xlsx'
@@ -309,7 +317,7 @@ export function TeachersView({
         email: clean(7),
         phone: clean(8),
         address: clean(9),
-        photo: '',
+        photo: normalizePhotoInputUrl(clean(10)),
       });
     });
     return result;
@@ -327,10 +335,20 @@ export function TeachersView({
       onToast('error', 'Format data guru tidak valid.');
       return;
     }
-    const stats = onImportTeachersBatch(parsed);
-    setPasteText('');
-    setImportModalOpen(false);
-    onToast('success', `Impor selesai: ${stats.added} ditambah, ${stats.updated} diperbarui.`);
+    onConfirm({
+      title: 'Simpan Data Impor Guru?',
+      description: `Ditemukan ${parsed.length} data guru siap disimpan ke database. Apakah Anda ingin menyimpan data impor ini sekarang?`,
+      confirmLabel: 'Ya, Simpan Data',
+      onConfirm: () => {
+        const stats = onImportTeachersBatch(parsed);
+        setPasteText('');
+        setImportModalOpen(false);
+        onToast('success', `Impor selesai: ${stats.added} ditambah, ${stats.updated} diperbarui.`);
+      },
+      onCancel: () => {
+        onToast('info', 'Impor data guru dibatalkan, data belum disimpan.');
+      },
+    });
   };
 
   const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -340,15 +358,36 @@ export function TeachersView({
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(buf, { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1, defval: '' });
+      const rows = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1, defval: '' }).map(
+        (row, rIdx) => {
+          const nextRow = [...row];
+          const photoCellAddr = XLSX.utils.encode_cell({ r: rIdx, c: 10 });
+          const photoCell = ws[photoCellAddr] as XLSX.CellObject | undefined;
+          const rawVal = String(nextRow[10] ?? '').trim();
+          if (photoCell?.l?.Target && !/^https?:\/\//i.test(rawVal)) {
+            nextRow[10] = photoCell.l.Target;
+          }
+          return nextRow;
+        }
+      );
       const parsed = parseRowsToTeachers(rows);
       if (parsed.length === 0) {
         onToast('error', 'Tidak ditemukan baris guru valid di file.');
         return;
       }
-      const stats = onImportTeachersBatch(parsed);
-      setImportModalOpen(false);
-      onToast('success', `Impor "${file.name}": ${stats.added} ditambah, ${stats.updated} diperbarui.`);
+      onConfirm({
+        title: 'Simpan Data Impor Guru?',
+        description: `File "${file.name}" berisi ${parsed.length} data guru valid. Apakah Anda ingin menyimpan data impor ini ke database?`,
+        confirmLabel: 'Ya, Simpan Data',
+        onConfirm: () => {
+          const stats = onImportTeachersBatch(parsed);
+          setImportModalOpen(false);
+          onToast('success', `Impor "${file.name}": ${stats.added} ditambah, ${stats.updated} diperbarui.`);
+        },
+        onCancel: () => {
+          onToast('info', `Impor file "${file.name}" dibatalkan, data belum disimpan.`);
+        },
+      });
     } catch {
       onToast('error', 'Gagal membaca file Excel/CSV.');
     } finally {
@@ -492,6 +531,7 @@ export function TeachersView({
                   orientation: cfg.orientation,
                   paperSize: cfg.paperSize,
                 });
+                onToast('info', 'Menyiapkan tampilan cetak data guru...');
               }}
             />
           </div>
@@ -554,17 +594,12 @@ export function TeachersView({
                         {idx + 1}
                       </td>
                       <td className="px-3 py-2.5">
-                        {t.photo ? (
-                          <img
-                            src={t.photo}
-                            alt={t.name}
-                            className="w-8 h-8 rounded-full object-cover border border-slate-200"
-                          />
-                        ) : (
-                          <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 text-xs font-bold flex items-center justify-center">
-                            {t.name.slice(0, 2).toUpperCase()}
-                          </div>
-                        )}
+                        <PersonAvatar
+                          src={t.photo}
+                          fallbackSrc={getTeacherDummyPhoto(t.gender, t.position)}
+                          alt={t.name}
+                          className="w-8 h-8 rounded-full object-cover object-top border border-slate-200 bg-slate-100"
+                        />
                       </td>
                       <td className="px-3 py-2.5 font-mono-tabular text-xs text-slate-600 whitespace-nowrap">
                         {t.nip || '-'}
@@ -748,7 +783,7 @@ export function TeachersView({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 items-end">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             <div>
               <label htmlFor="tch-email" className="block text-xs font-semibold text-slate-700 mb-1.5">
                 Email
@@ -790,23 +825,56 @@ export function TeachersView({
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600"
               />
             </div>
+          </div>
 
-            <div className="flex items-center gap-2">
-              <label className="cursor-pointer flex-1 px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-semibold text-slate-700 inline-flex items-center justify-center gap-1.5">
-                <ImagePlus className="w-4 h-4 text-indigo-600" />
-                {photo ? 'Ganti Foto' : 'Unggah Foto'}
-                <input type="file" accept="image/*" className="hidden" onChange={handlePhotoUpload} />
-              </label>
-              {photo && (
-                <button
-                  type="button"
-                  onClick={() => setPhoto('')}
-                  className="px-2.5 py-2 rounded-lg border border-rose-200 text-xs text-rose-600 hover:bg-rose-50"
-                >
-                  Hapus
-                </button>
-              )}
+          <div>
+            <label htmlFor="tch-photo-url" className="block text-xs font-semibold text-slate-700 mb-1.5">
+              Foto Pendidik / Staf TU (Link Google Drive / Unggah File)
+            </label>
+            <div className="flex items-center gap-3">
+              <PersonAvatar
+                src={photo}
+                fallbackSrc={getTeacherDummyPhoto(gender, position)}
+                alt={name || 'Preview foto guru/TU'}
+                className="w-12 h-12 rounded-xl object-cover object-top border border-slate-200 bg-slate-100 shrink-0"
+              />
+              <div className="flex-1 flex flex-wrap items-center gap-2 min-w-0">
+                <input
+                  id="tch-photo-url"
+                  type="text"
+                  value={photo.startsWith('data:') ? '' : photo}
+                  onChange={(e) => setPhoto(e.target.value)}
+                  placeholder={
+                    photo.startsWith('data:')
+                      ? 'Foto file lokal terunggah (tempel link Drive untuk mengganti)'
+                      : 'Tempel link Google Drive / URL foto...'
+                  }
+                  className="flex-1 min-w-[200px] px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600"
+                />
+                <label className="cursor-pointer px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 whitespace-nowrap">
+                  <ImagePlus className="w-4 h-4 text-indigo-600" />
+                  <span>{photo ? 'Ganti File' : 'Unggah Foto'}</span>
+                  <input type="file" accept="image/*" className="hidden" onChange={handlePhotoUpload} />
+                </label>
+                {photo && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPhoto('');
+                      onToast('info', 'Foto guru dihapus dari pratinjau.');
+                    }}
+                    className="px-2.5 py-2 rounded-lg border border-rose-200 text-xs text-rose-600 hover:bg-rose-50 whitespace-nowrap"
+                  >
+                    Hapus
+                  </button>
+                )}
+              </div>
             </div>
+            <p className="text-[11px] text-slate-500 mt-1">
+              {photo
+                ? 'Menampilkan foto dari Google Drive / unggahan (otomatis memakai foto dummy jika gagal dimuat).'
+                : 'Belum ada foto — otomatis menampilkan foto dummy Guru atau Staf TU sesuai jabatan dan jenis kelamin.'}
+            </p>
           </div>
 
           <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
@@ -841,7 +909,7 @@ export function TeachersView({
       <FormModal
         open={importModalOpen}
         title="Impor Massal Data Guru (Excel / CSV / Tempel)"
-        subtitle="Urutan kolom: NIP, Nama Lengkap, L/P, Jabatan, Mata Pelajaran, Kepegawaian, Status, Email, No HP, Alamat"
+        subtitle="Urutan kolom: NIP, Nama Lengkap, L/P, Jabatan, Mata Pelajaran, Kepegawaian, Status, Email, No HP, Alamat, Link Foto (opsional)"
         maxWidthClass="max-w-2xl"
         onClose={() => setImportModalOpen(false)}
       >

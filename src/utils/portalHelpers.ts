@@ -1,4 +1,14 @@
-import { AttendanceStatus, GradeEntry, JournalEntry, Student } from '../types';
+import {
+  AttendanceStatus,
+  GradeEntry,
+  JournalEntry,
+  KopLineKey,
+  KopLineStyle,
+  KopSuratSettings,
+  KopTextAlign,
+  PrintFontFamily,
+  Student,
+} from '../types';
 
 export const ATTENDANCE_STATUS_META: Record<
   AttendanceStatus,
@@ -300,3 +310,254 @@ export async function compressImageFileToDataUrl(
     img.src = rawDataUrl;
   });
 }
+
+export const DUMMY_AVATARS = {
+  studentMale: '/assets/aistudio/Siswa_Putra_dd500b95.jpg',
+  studentFemale: '/assets/aistudio/Siswi_Putri_972800f4.jpg',
+  teacherMale: '/assets/aistudio/Guru_Putra_75beabf3.png',
+  teacherFemale: '/assets/aistudio/Guru_Putri_05c5b30c.png',
+  tuMale: '/assets/aistudio/TU_Purtra_a36e2763.png',
+  tuFemale: '/assets/aistudio/TU_Purtri_05f16c00.png',
+} as const;
+
+export function isTuOrStaffPosition(position?: string): boolean {
+  if (!position) return false;
+  return /\b(tu|tata\s*usaha|staf|staff|admin|administrasi|operator|pustakawan|perpustakaan|laboran|tendik|kepegawaian|keuangan|bendahara|satpam|kebersihan)\b/i.test(
+    position
+  );
+}
+
+export function getStudentDummyPhoto(gender?: 'L' | 'P' | string): string {
+  return gender === 'P' ? DUMMY_AVATARS.studentFemale : DUMMY_AVATARS.studentMale;
+}
+
+export function getTeacherDummyPhoto(gender?: 'L' | 'P' | string, position?: string): string {
+  if (isTuOrStaffPosition(position)) {
+    return gender === 'P' ? DUMMY_AVATARS.tuFemale : DUMMY_AVATARS.tuMale;
+  }
+  return gender === 'P' ? DUMMY_AVATARS.teacherFemale : DUMMY_AVATARS.teacherMale;
+}
+
+function unwrapSpreadsheetUrlFormula(raw: string): string {
+  const trimmed = raw.trim();
+  const formulaMatch = trimmed.match(/^=(?:IMAGE|HYPERLINK)\s*\(\s*["']([^"']+)["']/i);
+  if (formulaMatch?.[1]) {
+    return formulaMatch[1].trim();
+  }
+  return trimmed;
+}
+
+export function extractGoogleDriveFileId(rawUrl?: string): string | null {
+  if (!rawUrl) return null;
+  const cleaned = unwrapSpreadsheetUrlFormula(rawUrl);
+  if (!cleaned || cleaned.startsWith('data:')) return null;
+
+  const fileDMatch = cleaned.match(
+    /(?:drive|docs)\.google\.com\/(?:a\/[^/]+\/)?file\/d\/([a-zA-Z0-9_-]{10,})/i
+  );
+  if (fileDMatch?.[1]) return fileDMatch[1];
+
+  const lh3Match = cleaned.match(/lh3\.googleusercontent\.com\/d\/([a-zA-Z0-9_-]{10,})/i);
+  if (lh3Match?.[1]) return lh3Match[1];
+
+  const driveViewerMatch = cleaned.match(
+    /drive\.google\.com\/drive-viewer\/([a-zA-Z0-9_-]{10,})/i
+  );
+  if (driveViewerMatch?.[1]) return driveViewerMatch[1];
+
+  if (/(?:drive|docs)\.google\.com/i.test(cleaned)) {
+    const queryIdMatch = cleaned.match(/[?&]id=([a-zA-Z0-9_-]{10,})/i);
+    if (queryIdMatch?.[1]) return queryIdMatch[1];
+  }
+
+  return null;
+}
+
+export function isGoogleDrivePhotoUrl(rawUrl?: string): boolean {
+  return Boolean(extractGoogleDriveFileId(rawUrl));
+}
+
+export function normalizePhotoInputUrl(rawUrl?: string): string {
+  if (!rawUrl) return '';
+  const cleaned = unwrapSpreadsheetUrlFormula(rawUrl);
+  if (!cleaned) return '';
+  if (cleaned.startsWith('data:image/') || cleaned.startsWith('/assets/')) {
+    return cleaned;
+  }
+  const driveId = extractGoogleDriveFileId(cleaned);
+  if (driveId) {
+    return `https://drive.google.com/thumbnail?id=${driveId}&sz=w800`;
+  }
+  return cleaned;
+}
+
+export function getDriveImageCandidates(rawUrl?: string): string[] {
+  if (!rawUrl) return [];
+  const cleaned = unwrapSpreadsheetUrlFormula(rawUrl);
+  if (!cleaned) return [];
+
+  const driveId = extractGoogleDriveFileId(cleaned);
+  if (driveId) {
+    return [
+      `https://drive.google.com/thumbnail?id=${driveId}&sz=w800`,
+      `https://lh3.googleusercontent.com/d/${driveId}=w800`,
+      `https://drive.google.com/uc?export=view&id=${driveId}`,
+    ];
+  }
+
+  if (
+    cleaned.startsWith('data:image/') ||
+    cleaned.startsWith('http://') ||
+    cleaned.startsWith('https://') ||
+    cleaned.startsWith('/')
+  ) {
+    return [cleaned];
+  }
+
+  return [];
+}
+
+export const KOP_LINE_KEYS: KopLineKey[] = [
+  'line1',
+  'line2',
+  'line3',
+  'line4',
+  'line5',
+  'line6',
+];
+
+export const DEFAULT_KOP_LINE_STYLES: Record<KopLineKey, KopLineStyle> = {
+  line1: { fontSize: 11, bold: false, italic: false, underline: false, align: 'center' },
+  line2: { fontSize: 12, bold: true, italic: false, underline: false, align: 'center' },
+  line3: { fontSize: 14, bold: true, italic: false, underline: false, align: 'center' },
+  line4: { fontSize: 9, bold: false, italic: false, underline: false, align: 'center' },
+  line5: { fontSize: 9, bold: false, italic: false, underline: false, align: 'center' },
+  line6: { fontSize: 9, bold: false, italic: false, underline: false, align: 'center' },
+};
+
+const VALID_KOP_ALIGNMENTS: KopTextAlign[] = ['left', 'center', 'right', 'justify'];
+const VALID_PRINT_FONTS: PrintFontFamily[] = [
+  'Times New Roman',
+  'Tahoma',
+  'Arial',
+  'Verdana',
+  'Calibri',
+  'Georgia',
+];
+
+export function getPrintFontCss(fontFamily?: PrintFontFamily): string {
+  switch (fontFamily) {
+    case 'Tahoma':
+      return 'Tahoma, Geneva, sans-serif';
+    case 'Arial':
+      return 'Arial, Helvetica, sans-serif';
+    case 'Verdana':
+      return 'Verdana, Geneva, sans-serif';
+    case 'Calibri':
+      return 'Calibri, "Segoe UI", Arial, sans-serif';
+    case 'Georgia':
+      return 'Georgia, "Times New Roman", serif';
+    case 'Times New Roman':
+    default:
+      return '"Times New Roman", Times, serif';
+  }
+}
+
+export function resolveKopLineStyle(
+  kop: Partial<KopSuratSettings> | undefined,
+  key: KopLineKey
+): KopLineStyle {
+  const def = DEFAULT_KOP_LINE_STYLES[key];
+  const raw = kop?.lineStyles?.[key];
+  if (!raw) return { ...def };
+  const rawSize = Number(raw.fontSize);
+  return {
+    fontSize: Number.isFinite(rawSize) ? Math.max(7, Math.min(28, Math.round(rawSize))) : def.fontSize,
+    bold: typeof raw.bold === 'boolean' ? raw.bold : def.bold,
+    italic: typeof raw.italic === 'boolean' ? raw.italic : def.italic,
+    underline: typeof raw.underline === 'boolean' ? raw.underline : def.underline,
+    align: VALID_KOP_ALIGNMENTS.includes(raw.align) ? raw.align : def.align,
+  };
+}
+
+export const DEFAULT_KOP_LINE_SPACING = 1.25;
+
+export function normalizeKopLineSpacing(value: unknown, fallback = DEFAULT_KOP_LINE_SPACING): number {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.round(Math.max(0.85, Math.min(2.4, num)) * 100) / 100;
+}
+
+export function normalizeKopSurat(
+  raw: Partial<KopSuratSettings> | undefined,
+  fallback: KopSuratSettings
+): KopSuratSettings {
+  const merged = { ...fallback, ...(raw || {}) };
+  const resolvedStyles: Record<KopLineKey, KopLineStyle> = {
+    line1: resolveKopLineStyle(merged, 'line1'),
+    line2: resolveKopLineStyle(merged, 'line2'),
+    line3: resolveKopLineStyle(merged, 'line3'),
+    line4: resolveKopLineStyle(merged, 'line4'),
+    line5: resolveKopLineStyle(merged, 'line5'),
+    line6: resolveKopLineStyle(merged, 'line6'),
+  };
+  return {
+    ...merged,
+    logoLeftSize: Math.max(
+      28,
+      Math.min(150, Number(merged.logoLeftSize ?? fallback.logoLeftSize ?? 72) || 72)
+    ),
+    logoRightSize: Math.max(
+      28,
+      Math.min(150, Number(merged.logoRightSize ?? fallback.logoRightSize ?? 72) || 72)
+    ),
+    fontFamily: VALID_PRINT_FONTS.includes(merged.fontFamily as PrintFontFamily)
+      ? merged.fontFamily
+      : fallback.fontFamily || 'Times New Roman',
+    lineSpacing: normalizeKopLineSpacing(
+      merged.lineSpacing,
+      normalizeKopLineSpacing(fallback.lineSpacing, DEFAULT_KOP_LINE_SPACING)
+    ),
+    lineStyles: resolvedStyles,
+  };
+}
+
+export function compareClassNames(a: string, b: string): number {
+  return (a || '').trim().localeCompare((b || '').trim(), 'id', {
+    numeric: true,
+    sensitivity: 'base',
+  });
+}
+
+function parseAbsentSortKey(absentNo?: string): { num: number; raw: string } {
+  const raw = (absentNo || '').trim();
+  if (!raw) return { num: Number.MAX_SAFE_INTEGER, raw: '' };
+  const match = raw.match(/^\d+/);
+  if (match) {
+    return { num: Number(match[0]), raw };
+  }
+  return { num: Number.MAX_SAFE_INTEGER - 1, raw };
+}
+
+export function compareAbsentNo(a?: string, b?: string): number {
+  const ka = parseAbsentSortKey(a);
+  const kb = parseAbsentSortKey(b);
+  if (ka.num !== kb.num) return ka.num - kb.num;
+  if (ka.raw && !kb.raw) return -1;
+  if (!ka.raw && kb.raw) return 1;
+  return ka.raw.localeCompare(kb.raw, 'id', { numeric: true, sensitivity: 'base' });
+}
+
+export function compareStudentsByClassAndAbsent(
+  a: Pick<Student, 'className' | 'absentNo' | 'name'>,
+  b: Pick<Student, 'className' | 'absentNo' | 'name'>
+): number {
+  return (
+    compareClassNames(a.className, b.className) ||
+    compareAbsentNo(a.absentNo, b.absentNo) ||
+    a.name.localeCompare(b.name, 'id', { sensitivity: 'base' })
+  );
+}
+
+
+

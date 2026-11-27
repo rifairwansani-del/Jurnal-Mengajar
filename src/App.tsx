@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { AccountsView } from './components/AccountsView';
 import { DashboardView } from './components/DashboardView';
@@ -91,15 +91,50 @@ export default function App() {
     setConfirmState({ ...cfg, open: true });
   }, []);
 
-  const handleEditJournalFromDashboard = useCallback((entry: JournalEntry) => {
-    setDraftJournal({ mode: 'edit', entry });
-    setActiveMenu('journal');
-  }, []);
+  const pendingLoginToastRef = useRef(false);
 
-  const handleDuplicateJournalFromDashboard = useCallback((entry: JournalEntry) => {
-    setDraftJournal({ mode: 'duplicate', entry });
-    setActiveMenu('journal');
-  }, []);
+  useEffect(() => {
+    if (pendingLoginToastRef.current && db.session.isLoggedIn && !dataLoading) {
+      pendingLoginToastRef.current = false;
+      const roleLabel = db.session.userRole ? ` (${db.session.userRole})` : '';
+      showToast(
+        'success',
+        `Berhasil masuk sebagai ${db.session.userName || db.session.email}${roleLabel}.`
+      );
+    }
+  }, [
+    db.session.isLoggedIn,
+    db.session.userName,
+    db.session.email,
+    db.session.userRole,
+    dataLoading,
+    showToast,
+  ]);
+
+  useEffect(() => {
+    if (pendingLoginToastRef.current && accessDeniedMessage) {
+      pendingLoginToastRef.current = false;
+      showToast('error', accessDeniedMessage);
+    }
+  }, [accessDeniedMessage, showToast]);
+
+  const handleEditJournalFromDashboard = useCallback(
+    (entry: JournalEntry) => {
+      setDraftJournal({ mode: 'edit', entry });
+      setActiveMenu('journal');
+      showToast('info', `Mode edit dibuka untuk jurnal ${entry.className} (${entry.subject}).`);
+    },
+    [showToast]
+  );
+
+  const handleDuplicateJournalFromDashboard = useCallback(
+    (entry: JournalEntry) => {
+      setDraftJournal({ mode: 'duplicate', entry });
+      setActiveMenu('journal');
+      showToast('info', `Salinan jurnal ${entry.className} (${entry.subject}) disiapkan.`);
+    },
+    [showToast]
+  );
 
   const handleCreateJournalFromSchedule = useCallback(
     (item: TeachingSchedule) => {
@@ -143,12 +178,14 @@ export default function App() {
           signingIn={signingIn}
           accessDeniedMessage={accessDeniedMessage}
           pendingUserEmail={pendingUserEmail}
-          onGoogleLogin={async (academicYear, semester) => {
-            await loginWithGoogle(academicYear, semester);
+          onGoogleLogin={async (academicYear, semester, applyPeriodOverride) => {
+            pendingLoginToastRef.current = true;
+            await loginWithGoogle(academicYear, semester, applyPeriodOverride);
             setActiveMenu('dashboard');
           }}
-          onCredentialsLogin={async (username, password, academicYear, semester) => {
-            await loginWithCredentials(username, password, academicYear, semester);
+          onCredentialsLogin={async (username, password, academicYear, semester, applyPeriodOverride) => {
+            pendingLoginToastRef.current = true;
+            await loginWithCredentials(username, password, academicYear, semester, applyPeriodOverride);
             setActiveMenu('dashboard');
           }}
           onSwitchAccount={async () => {

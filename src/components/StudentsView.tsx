@@ -19,12 +19,17 @@ import {
   printDatasetExact,
 } from '../utils/exportHelpers';
 import {
+  compareClassNames,
+  compareStudentsByClassAndAbsent,
   compressImageFileToDataUrl,
   formatShortDateId,
+  getStudentDummyPhoto,
   getTodayISO,
+  normalizePhotoInputUrl,
 } from '../utils/portalHelpers';
 import { ConfirmDialogState } from './FeedbackUI';
 import { FormModal } from './FormModal';
+import { PersonAvatar } from './PersonAvatar';
 import { StudentDetailModal } from './StudentDetailModal';
 import { TableExportToolbar } from './TableExportToolbar';
 
@@ -75,7 +80,7 @@ export function StudentsView({
     students.forEach((s) => {
       if (s.className) set.add(s.className);
     });
-    return Array.from(set);
+    return Array.from(set).sort(compareClassNames);
   }, [settings.masterClasses, students]);
 
   const teacherNames = useMemo(() => {
@@ -148,6 +153,7 @@ export function StudentsView({
     }
     const compressed = await compressImageFileToDataUrl(file, 420, 200000);
     setPhoto(compressed);
+    onToast('success', 'Foto siswa berhasil diunggah ke pratinjau. Klik Simpan untuk menyimpan.');
   };
 
   const handleSubmitStudent = (e: React.FormEvent) => {
@@ -167,7 +173,7 @@ export function StudentsView({
       birthPlace: birthPlace.trim(),
       birthDate: birthDate.trim(),
       email: email.trim(),
-      photo: photo.trim(),
+      photo: normalizePhotoInputUrl(photo),
       address: address.trim(),
       phone: phone.trim(),
       gender,
@@ -299,12 +305,7 @@ export function StudentsView({
         }
         return true;
       })
-      .sort(
-        (a, b) =>
-          a.className.localeCompare(b.className) ||
-          (a.absentNo || '').localeCompare(b.absentNo || '') ||
-          a.name.localeCompare(b.name)
-      );
+      .sort(compareStudentsByClassAndAbsent);
   }, [students, classFilter, statusFilter, searchQuery]);
 
   const toggleSelectRow = (id: string) => {
@@ -434,12 +435,13 @@ export function StudentsView({
         return;
       }
 
-      // Compact 4-column fallback: NIS | Nama | L/P | Kelas
+      // Compact 4-column fallback: NIS | Nama | L/P | Kelas (+ optional photo URL in col 5)
       if (cols.length <= 5) {
         const c0 = clean(0);
         const c1 = clean(1);
         const c2 = clean(2).toUpperCase();
         const c3 = clean(3);
+        const c4 = clean(4);
         if (!c1 && !c0) return;
         result.push({
           nis: c0,
@@ -450,7 +452,7 @@ export function StudentsView({
           birthPlace: '',
           birthDate: '',
           email: '',
-          photo: '',
+          photo: /^https?:\/\//i.test(c4) ? normalizePhotoInputUrl(c4) : '',
           address: '',
           phone: '',
           gender: c2.startsWith('P') ? 'P' : 'L',
@@ -484,7 +486,7 @@ export function StudentsView({
         birthPlace: clean(5),
         birthDate: clean(6),
         email: clean(7),
-        photo: clean(8),
+        photo: normalizePhotoInputUrl(clean(8)),
         address: clean(9),
         phone: clean(10),
         gender: rawGender.startsWith('P') ? 'P' : 'L',
@@ -519,13 +521,23 @@ export function StudentsView({
       return;
     }
 
-    const stats = onImportStudentsBatch(parsed);
-    setPasteText('');
-    setImportModalOpen(false);
-    onToast(
-      'success',
-      `Impor selesai: ${stats.added} siswa baru ditambahkan, ${stats.updated} data diperbarui.`
-    );
+    onConfirm({
+      title: 'Simpan Data Impor Siswa?',
+      description: `Ditemukan ${parsed.length} data siswa siap disimpan ke database. Apakah Anda ingin menyimpan data impor ini sekarang?`,
+      confirmLabel: 'Ya, Simpan Data',
+      onConfirm: () => {
+        const stats = onImportStudentsBatch(parsed);
+        setPasteText('');
+        setImportModalOpen(false);
+        onToast(
+          'success',
+          `Impor selesai: ${stats.added} siswa baru ditambahkan, ${stats.updated} data diperbarui.`
+        );
+      },
+      onCancel: () => {
+        onToast('info', 'Impor data siswa dibatalkan, data belum disimpan.');
+      },
+    });
   };
 
   const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -540,18 +552,39 @@ export function StudentsView({
         return;
       }
       const ws = wb.Sheets[firstSheet];
-      const rows = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1, defval: '' });
+      const rows = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1, defval: '' }).map(
+        (row, rIdx) => {
+          const nextRow = [...row];
+          const photoCellAddr = XLSX.utils.encode_cell({ r: rIdx, c: 8 });
+          const photoCell = ws[photoCellAddr] as XLSX.CellObject | undefined;
+          const rawVal = String(nextRow[8] ?? '').trim();
+          if (photoCell?.l?.Target && !/^https?:\/\//i.test(rawVal)) {
+            nextRow[8] = photoCell.l.Target;
+          }
+          return nextRow;
+        }
+      );
       const parsed = parseRawRowsToStudents(rows);
       if (parsed.length === 0) {
         onToast('error', 'Tidak ditemukan baris siswa yang valid di dalam file.');
         return;
       }
-      const stats = onImportStudentsBatch(parsed);
-      setImportModalOpen(false);
-      onToast(
-        'success',
-        `Impor file "${file.name}" selesai: ${stats.added} ditambahkan, ${stats.updated} diperbarui.`
-      );
+      onConfirm({
+        title: 'Simpan Data Impor Siswa?',
+        description: `File "${file.name}" berisi ${parsed.length} data siswa valid. Apakah Anda ingin menyimpan data impor ini ke database?`,
+        confirmLabel: 'Ya, Simpan Data',
+        onConfirm: () => {
+          const stats = onImportStudentsBatch(parsed);
+          setImportModalOpen(false);
+          onToast(
+            'success',
+            `Impor file "${file.name}" selesai: ${stats.added} ditambahkan, ${stats.updated} diperbarui.`
+          );
+        },
+        onCancel: () => {
+          onToast('info', `Impor file "${file.name}" dibatalkan, data belum disimpan.`);
+        },
+      });
     } catch {
       onToast('error', 'Gagal membaca file. Pastikan format .xlsx, .xls, atau .csv valid.');
     } finally {
@@ -703,6 +736,7 @@ export function StudentsView({
                   orientation: cfg.orientation,
                   paperSize: cfg.paperSize,
                 });
+                onToast('info', 'Menyiapkan tampilan cetak daftar siswa...');
               }}
             />
           </div>
@@ -771,17 +805,12 @@ export function StudentsView({
                       {idx + 1}
                     </td>
                     <td className="px-3 py-2.5">
-                      {st.photo ? (
-                        <img
-                          src={st.photo}
-                          alt={st.name}
-                          className="w-8 h-8 rounded-full object-cover border border-slate-200"
-                        />
-                      ) : (
-                        <div className="w-8 h-8 rounded-full bg-slate-200 text-slate-700 text-xs font-bold flex items-center justify-center">
-                          {st.name.slice(0, 2).toUpperCase()}
-                        </div>
-                      )}
+                      <PersonAvatar
+                        src={st.photo}
+                        fallbackSrc={getStudentDummyPhoto(st.gender)}
+                        alt={st.name}
+                        className="w-8 h-8 rounded-full object-cover object-top border border-slate-200 bg-slate-100"
+                      />
                     </td>
                     <td className="px-3 py-2.5 font-mono-tabular text-xs text-slate-700 whitespace-nowrap">
                       {st.nis}
@@ -1079,8 +1108,8 @@ export function StudentsView({
           </div>
 
           {/* Row 4: Wali Kelas, Guru BK, Foto */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
-            <div className="lg:col-span-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 items-start">
+            <div>
               <label htmlFor="st-wali" className="block text-xs font-semibold text-slate-700 mb-1.5">
                 Wali Kelas
               </label>
@@ -1094,7 +1123,7 @@ export function StudentsView({
               />
             </div>
 
-            <div className="lg:col-span-2">
+            <div>
               <label htmlFor="st-bk" className="block text-xs font-semibold text-slate-700 mb-1.5">
                 Guru BK
               </label>
@@ -1114,21 +1143,54 @@ export function StudentsView({
               ))}
             </datalist>
 
-            <div className="flex items-center gap-2">
-              <label className="cursor-pointer flex-1 px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-semibold text-slate-700 inline-flex items-center justify-center gap-1.5">
-                <ImagePlus className="w-4 h-4 text-indigo-600" />
-                {photo ? 'Ganti Foto' : 'Foto Siswa'}
-                <input type="file" accept="image/*" className="hidden" onChange={handlePhotoUpload} />
+            <div className="sm:col-span-2">
+              <label htmlFor="st-photo-url" className="block text-xs font-semibold text-slate-700 mb-1.5">
+                Foto Siswa (Link Google Drive / Unggah File)
               </label>
-              {photo && (
-                <button
-                  type="button"
-                  onClick={() => setPhoto('')}
-                  className="px-2.5 py-2 rounded-lg border border-rose-200 text-xs text-rose-600 hover:bg-rose-50"
-                >
-                  Hapus
-                </button>
-              )}
+              <div className="flex items-center gap-3">
+                <PersonAvatar
+                  src={photo}
+                  fallbackSrc={getStudentDummyPhoto(gender)}
+                  alt={name || 'Preview foto siswa'}
+                  className="w-11 h-11 rounded-xl object-cover object-top border border-slate-200 bg-slate-100 shrink-0"
+                />
+                <div className="flex-1 flex flex-wrap items-center gap-2 min-w-0">
+                  <input
+                    id="st-photo-url"
+                    type="text"
+                    value={photo.startsWith('data:') ? '' : photo}
+                    onChange={(e) => setPhoto(e.target.value)}
+                    placeholder={
+                      photo.startsWith('data:')
+                        ? 'Foto file lokal terunggah (tempel link Drive untuk mengganti)'
+                        : 'Tempel link Google Drive / URL foto...'
+                    }
+                    className="flex-1 min-w-[180px] px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600"
+                  />
+                  <label className="cursor-pointer px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 whitespace-nowrap">
+                    <ImagePlus className="w-4 h-4 text-indigo-600" />
+                    <span>{photo ? 'Ganti File' : 'Unggah'}</span>
+                    <input type="file" accept="image/*" className="hidden" onChange={handlePhotoUpload} />
+                  </label>
+                  {photo && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPhoto('');
+                        onToast('info', 'Foto siswa dihapus dari pratinjau.');
+                      }}
+                      className="px-2.5 py-2 rounded-lg border border-rose-200 text-xs text-rose-600 hover:bg-rose-50 whitespace-nowrap"
+                    >
+                      Hapus
+                    </button>
+                  )}
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1">
+                {photo
+                  ? 'Menampilkan foto dari Google Drive / unggahan (otomatis memakai foto dummy jika gagal dimuat).'
+                  : 'Belum ada foto terunggah — otomatis menampilkan foto dummy sesuai jenis kelamin.'}
+              </p>
             </div>
           </div>
 

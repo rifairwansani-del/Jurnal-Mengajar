@@ -12,6 +12,7 @@
 | --- | --- | --- | --- | --- | --- |
 | `/users/{userId}` | Owner or Admin | Admin | Owner (`role == 'Pending'` or Bootstrap Admin `'Admin'`) | Admin, or Owner (non-role fields, `createdAt` immutable) | Admin |
 | `/accounts/{accountId}` | Self (`authEmail() == accountId`) or Staff | Staff | Admin (`accountId == email.lower()`) | Admin, or Staff self updating `lastLogin` only | Admin (cannot delete Bootstrap Admin) |
+| `/credential_sync/{accountId}` | Admin | Admin | Admin (`accountId == email.lower()`) | Admin (`accountId` immutable) | Admin |
 | `/students/{studentId}` | Staff | Staff | Staff | Staff (`id` immutable) | Staff |
 | `/teachers/{teacherId}` | Staff | Staff | Staff | Staff (`id` immutable) | Staff |
 | `/schedules/{scheduleId}` | Staff | Staff | Staff | Staff (`id` immutable) | Staff |

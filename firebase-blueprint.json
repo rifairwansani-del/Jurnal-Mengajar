@@ -33,6 +33,24 @@
       },
       "required": ["id", "name", "email", "role", "nip", "status", "lastLogin", "signatureImage", "schoolStampImage"]
     },
+    "CredentialSync": {
+      "title": "CredentialSync",
+      "description": "Admin-only mirrored salted password hash and username record for cross-environment (Draft/Deploy) synchronization.",
+      "type": "object",
+      "properties": {
+        "accountId": { "type": "string" },
+        "username": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "name": { "type": "string" },
+        "role": { "type": "string", "enum": ["Admin", "Guru Mapel", "Wali Kelas", "Guru BK", "Kepala Sekolah"] },
+        "nip": { "type": "string" },
+        "status": { "type": "string", "enum": ["Aktif", "Nonaktif"] },
+        "passwordHash": { "type": "string" },
+        "salt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["accountId", "username", "email", "name", "role", "nip", "status", "passwordHash", "salt", "updatedAt"]
+    },
     "Student": {
       "title": "Student",
       "description": "Student master record and biodata.",
@@ -195,6 +213,10 @@
     "/accounts/{accountId}": {
       "schema": { "$ref": "#/entities/UserAccount" },
       "description": "Staff whitelist & signer profiles keyed by lowercase email."
+    },
+    "/credential_sync/{accountId}": {
+      "schema": { "$ref": "#/entities/CredentialSync" },
+      "description": "Admin-only salted scrypt password verifiers mirrored across Draft and Deploy."
     },
     "/students/{studentId}": {
       "schema": { "$ref": "#/entities/Student" },

@@ -114,7 +114,7 @@ export function SignaturePadModal({
   };
 
   return (
-    <div className="no-print fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs">
+    <div className="no-print fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs">
       <div
         role="dialog"
         aria-modal="true"

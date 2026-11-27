@@ -2,6 +2,7 @@ import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import {
+  KopSuratSettings,
   PaperOrientation,
   PaperSizeId,
   PortalDatabase,
@@ -11,8 +12,12 @@ import {
 } from '../types';
 import {
   formatLongDateId,
+  getPrintFontCss,
   getTodayISO,
   imageUrlToPngDataUrl,
+  KOP_LINE_KEYS,
+  normalizeKopLineSpacing,
+  resolveKopLineStyle,
 } from './portalHelpers';
 
 export const PAPER_SIZE_CONFIG: Record<
@@ -22,6 +27,8 @@ export const PAPER_SIZE_CONFIG: Record<
     shortLabel: string;
     jsPdfFormat: string | [number, number];
     cssPageSize: string;
+    widthMm: number;
+    heightMm: number;
     portraitMaxW: string;
     landscapeMinW: string;
     landscapeMaxW: string;
@@ -32,6 +39,8 @@ export const PAPER_SIZE_CONFIG: Record<
     shortLabel: 'A4',
     jsPdfFormat: 'a4',
     cssPageSize: 'A4',
+    widthMm: 210,
+    heightMm: 297,
     portraitMaxW: 'max-w-[794px]',
     landscapeMinW: 'min-w-[920px]',
     landscapeMaxW: 'max-w-[1123px]',
@@ -41,6 +50,8 @@ export const PAPER_SIZE_CONFIG: Record<
     shortLabel: 'F4',
     jsPdfFormat: [215, 330],
     cssPageSize: '215mm 330mm',
+    widthMm: 215,
+    heightMm: 330,
     portraitMaxW: 'max-w-[812px]',
     landscapeMinW: 'min-w-[1000px]',
     landscapeMaxW: 'max-w-[1247px]',
@@ -50,6 +61,8 @@ export const PAPER_SIZE_CONFIG: Record<
     shortLabel: 'Letter',
     jsPdfFormat: 'letter',
     cssPageSize: 'letter',
+    widthMm: 216,
+    heightMm: 279,
     portraitMaxW: 'max-w-[816px]',
     landscapeMinW: 'min-w-[900px]',
     landscapeMaxW: 'max-w-[1056px]',
@@ -59,6 +72,8 @@ export const PAPER_SIZE_CONFIG: Record<
     shortLabel: 'Legal',
     jsPdfFormat: 'legal',
     cssPageSize: 'legal',
+    widthMm: 216,
+    heightMm: 356,
     portraitMaxW: 'max-w-[816px]',
     landscapeMinW: 'min-w-[1040px]',
     landscapeMaxW: 'max-w-[1344px]',
@@ -68,6 +83,8 @@ export const PAPER_SIZE_CONFIG: Record<
     shortLabel: 'A5',
     jsPdfFormat: 'a5',
     cssPageSize: 'A5',
+    widthMm: 148,
+    heightMm: 210,
     portraitMaxW: 'max-w-[559px]',
     landscapeMinW: 'min-w-[680px]',
     landscapeMaxW: 'max-w-[794px]',
@@ -87,6 +104,146 @@ export function resolvePrincipalStampImage(db: PortalDatabase): string {
     (a) => a.role === 'Kepala Sekolah' && a.status === 'Aktif' && Boolean(a.schoolStampImage)
   );
   return kepsekAcc?.schoolStampImage || db.settings.defaultSchoolStampImage || '';
+}
+
+export function mapPrintFontToPdf(fontFamily?: PrintFontFamily): 'times' | 'helvetica' {
+  return !fontFamily || fontFamily === 'Times New Roman' || fontFamily === 'Georgia'
+    ? 'times'
+    : 'helvetica';
+}
+
+export function drawPdfKopSurat(params: {
+  doc: jsPDF;
+  kop: KopSuratSettings;
+  leftLogoPng: string | null;
+  rightLogoPng: string | null;
+  logoLeftPx?: number;
+  logoRightPx?: number;
+  marginX: number;
+  startY: number;
+  fallbackFont?: 'times' | 'helvetica';
+}): number {
+  const {
+    doc,
+    kop,
+    leftLogoPng,
+    rightLogoPng,
+    marginX,
+    startY,
+    fallbackFont = 'times',
+  } = params;
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const logoLeftPx = Math.max(28, Math.min(150, params.logoLeftPx ?? kop.logoLeftSize ?? 72));
+  const logoRightPx = Math.max(28, Math.min(150, params.logoRightPx ?? kop.logoRightSize ?? 72));
+  const logoLeftMm = Math.round(logoLeftPx * 0.264583 * 10) / 10;
+  const logoRightMm = Math.round(logoRightPx * 0.264583 * 10) / 10;
+
+  const textLeftX = marginX + (leftLogoPng ? logoLeftMm + 3 : 0);
+  const textRightX = pageWidth - marginX - (rightLogoPng ? logoRightMm + 3 : 0);
+  const textMaxWidth = Math.max(40, textRightX - textLeftX);
+  const textCenterX = (textLeftX + textRightX) / 2;
+  const kopPdfFont = kop.fontFamily ? mapPrintFontToPdf(kop.fontFamily) : fallbackFont;
+  const lineSpacing = normalizeKopLineSpacing(kop.lineSpacing);
+
+  const preparedLines = KOP_LINE_KEYS.map((key, idx) => {
+    const raw = kop[key];
+    if (!raw) return null;
+    const style = resolveKopLineStyle(kop, key);
+    const jsStyle =
+      style.bold && style.italic
+        ? 'bolditalic'
+        : style.bold
+        ? 'bold'
+        : style.italic
+        ? 'italic'
+        : 'normal';
+    doc.setFont(kopPdfFont, jsStyle);
+    doc.setFontSize(style.fontSize);
+    const text = idx < 3 ? raw.toUpperCase() : raw;
+    const wrapped = doc.splitTextToSize(text, textMaxWidth) as string[];
+    const lineHeightMm = Math.max(2.4, style.fontSize * 0.352778 * lineSpacing);
+    const extraTopMm = key === 'line4' ? 0.8 : 0;
+    return { style, jsStyle, wrapped, lineHeightMm, extraTopMm };
+  }).filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+  const textHeightMm = preparedLines.reduce(
+    (sum, item) => sum + item.extraTopMm + item.wrapped.length * item.lineHeightMm,
+    0
+  );
+  const kopHeightMm = Math.max(
+    textHeightMm + 1.5,
+    leftLogoPng ? logoLeftMm : 0,
+    rightLogoPng ? logoRightMm : 0
+  );
+
+  if (leftLogoPng) {
+    doc.addImage(
+      leftLogoPng,
+      'PNG',
+      marginX,
+      startY + Math.max(0, (kopHeightMm - logoLeftMm) / 2),
+      logoLeftMm,
+      logoLeftMm
+    );
+  }
+  if (rightLogoPng) {
+    doc.addImage(
+      rightLogoPng,
+      'PNG',
+      pageWidth - marginX - logoRightMm,
+      startY + Math.max(0, (kopHeightMm - logoRightMm) / 2),
+      logoRightMm,
+      logoRightMm
+    );
+  }
+
+  let yCursor = startY + Math.max(0, (kopHeightMm - textHeightMm) / 2) + 3.2;
+  doc.setDrawColor(0, 0, 0);
+
+  preparedLines.forEach(({ style, jsStyle, wrapped, lineHeightMm, extraTopMm }) => {
+    yCursor += extraTopMm;
+    doc.setFont(kopPdfFont, jsStyle);
+    doc.setFontSize(style.fontSize);
+
+    wrapped.forEach((wLine) => {
+      if (style.align === 'left') {
+        doc.text(wLine, textLeftX, yCursor, { align: 'left' });
+      } else if (style.align === 'right') {
+        doc.text(wLine, textRightX, yCursor, { align: 'right' });
+      } else if (style.align === 'justify') {
+        doc.text(wLine, textLeftX, yCursor, { align: 'justify', maxWidth: textMaxWidth });
+      } else {
+        doc.text(wLine, textCenterX, yCursor, { align: 'center' });
+      }
+
+      if (style.underline) {
+        const textWidth = Math.min(textMaxWidth, doc.getTextWidth(wLine));
+        let uStartX = textCenterX - textWidth / 2;
+        let uEndX = textCenterX + textWidth / 2;
+        if (style.align === 'left') {
+          uStartX = textLeftX;
+          uEndX = textLeftX + textWidth;
+        } else if (style.align === 'right') {
+          uStartX = textRightX - textWidth;
+          uEndX = textRightX;
+        } else if (style.align === 'justify') {
+          uStartX = textLeftX;
+          uEndX = wLine.includes(' ') ? textRightX : textLeftX + textWidth;
+        }
+        doc.setLineWidth(Math.max(0.2, style.fontSize * 0.025));
+        doc.line(uStartX, yCursor + 0.7, uEndX, yCursor + 0.7);
+      }
+
+      yCursor += lineHeightMm;
+    });
+  });
+
+  const lineY = startY + kopHeightMm + 1.8;
+  doc.setLineWidth(0.75);
+  doc.line(marginX, lineY, pageWidth - marginX, lineY);
+  doc.setLineWidth(0.25);
+  doc.line(marginX, lineY + 1, pageWidth - marginX, lineY + 1);
+  return lineY + 5.8;
 }
 
 export function resolveActiveSigner(
@@ -264,23 +421,39 @@ async function buildOfficialPrintHtml(options: {
   const kopRightPx = Math.max(28, Math.min(150, settings.kopSurat.logoRightSize ?? 72));
   const kopLeftColPx = Math.max(72, kopLeftPx + 12);
   const kopRightColPx = Math.max(72, kopRightPx + 12);
+  const kopFontCss = getPrintFontCss(settings.kopSurat.fontFamily);
+  const kopLineSpacing = normalizeKopLineSpacing(settings.kopSurat.lineSpacing);
+
+  const kopLinesHtml = KOP_LINE_KEYS.map((key, idx) => {
+    const text = settings.kopSurat[key];
+    if (!text) return '';
+    const s = resolveKopLineStyle(settings.kopSurat, key);
+    const styles = [
+      `font-size:${s.fontSize}pt`,
+      `font-weight:${s.bold ? 'bold' : 'normal'}`,
+      `font-style:${s.italic ? 'italic' : 'normal'}`,
+      `text-decoration:${s.underline ? 'underline' : 'none'}`,
+      `text-align:${s.align}`,
+      s.align === 'justify' ? 'text-align-last:justify' : '',
+      idx < 3 ? 'text-transform:uppercase' : '',
+      key === 'line4' ? 'margin-top:3px' : '',
+    ]
+      .filter(Boolean)
+      .join('; ');
+    return `<div style="${styles};">${escapeHtml(text)}</div>`;
+  }).join('');
 
   const kopHtml = showKop
     ? `
       <table style="width:100%; border-collapse:collapse; border-bottom:4px double #000; margin-bottom:16px; padding-bottom:8px;">
         <tr>
-          <td style="width:${kopLeftColPx}px; text-align:center; vertical-align:middle; padding-bottom:8px;">
+          <td style="width:${kopLeftColPx}px; text-align:center; vertical-align:middle; padding-bottom:8px; border:none;">
             ${leftLogoPng ? `<img src="${leftLogoPng}" style="width:${kopLeftPx}px; height:${kopLeftPx}px; object-fit:contain;" />` : ''}
           </td>
-          <td style="text-align:center; vertical-align:middle; line-height:1.25; padding-bottom:8px;">
-            ${settings.kopSurat.line1 ? `<div style="font-size:11pt; text-transform:uppercase;">${escapeHtml(settings.kopSurat.line1)}</div>` : ''}
-            ${settings.kopSurat.line2 ? `<div style="font-size:12pt; font-weight:bold; text-transform:uppercase;">${escapeHtml(settings.kopSurat.line2)}</div>` : ''}
-            ${settings.kopSurat.line3 ? `<div style="font-size:14pt; font-weight:bold; text-transform:uppercase;">${escapeHtml(settings.kopSurat.line3)}</div>` : ''}
-            ${settings.kopSurat.line4 ? `<div style="font-size:9pt; margin-top:2px;">${escapeHtml(settings.kopSurat.line4)}</div>` : ''}
-            ${settings.kopSurat.line5 ? `<div style="font-size:9pt;">${escapeHtml(settings.kopSurat.line5)}</div>` : ''}
-            ${settings.kopSurat.line6 ? `<div style="font-size:9pt;">${escapeHtml(settings.kopSurat.line6)}</div>` : ''}
+          <td style="font-family:${kopFontCss}; vertical-align:middle; line-height:${kopLineSpacing}; padding-bottom:8px; border:none;">
+            ${kopLinesHtml}
           </td>
-          <td style="width:${kopRightColPx}px; text-align:center; vertical-align:middle; padding-bottom:8px;">
+          <td style="width:${kopRightColPx}px; text-align:center; vertical-align:middle; padding-bottom:8px; border:none;">
             ${rightLogoPng ? `<img src="${rightLogoPng}" style="width:${kopRightPx}px; height:${kopRightPx}px; object-fit:contain;" />` : ''}
           </td>
         </tr>
@@ -607,8 +780,8 @@ export async function exportDatasetToPdf(options: {
 
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
-  const marginX = 14;
-  let cursorY = 14;
+  const marginX = 12;
+  let cursorY = 12;
 
   const showSigImage = settings.reportPrintPreferences?.showSignatureImage ?? true;
   const principalStampImage = resolvePrincipalStampImage(db);
@@ -623,72 +796,29 @@ export async function exportDatasetToPdf(options: {
     ]);
 
   // Kop Surat
-  const logoLeftPx = Math.max(28, Math.min(150, settings.kopSurat.logoLeftSize ?? 72));
-  const logoRightPx = Math.max(28, Math.min(150, settings.kopSurat.logoRightSize ?? 72));
-  const logoLeftMm = Math.round(logoLeftPx * 0.264583 * 10) / 10;
-  const logoRightMm = Math.round(logoRightPx * 0.264583 * 10) / 10;
-  const contactLines = [settings.kopSurat.line4, settings.kopSurat.line5, settings.kopSurat.line6].filter(Boolean);
-  const textHeightMm = 19 + Math.max(1, contactLines.length) * 3.8;
-  const kopHeightMm = Math.max(
-    textHeightMm,
-    leftLogoPng ? logoLeftMm : 0,
-    rightLogoPng ? logoRightMm : 0
-  );
-  const textStartY = cursorY + Math.max(0, (kopHeightMm - textHeightMm) / 2);
-
-  if (leftLogoPng) {
-    doc.addImage(
-      leftLogoPng,
-      'PNG',
-      marginX,
-      cursorY + Math.max(0, (kopHeightMm - logoLeftMm) / 2),
-      logoLeftMm,
-      logoLeftMm
-    );
-  }
-  if (rightLogoPng) {
-    doc.addImage(
-      rightLogoPng,
-      'PNG',
-      pageWidth - marginX - logoRightMm,
-      cursorY + Math.max(0, (kopHeightMm - logoRightMm) / 2),
-      logoRightMm,
-      logoRightMm
-    );
-  }
-  const centerX = pageWidth / 2;
-  doc.setFontSize(10);
-  if (settings.kopSurat.line1) doc.text(settings.kopSurat.line1, centerX, textStartY + 4, { align: 'center' });
-  if (settings.kopSurat.line2) {
-    doc.setFont(pdfFont, 'bold');
-    doc.setFontSize(11);
-    doc.text(settings.kopSurat.line2, centerX, textStartY + 9, { align: 'center' });
-  }
-  if (settings.kopSurat.line3) {
-    doc.setFont(pdfFont, 'bold');
-    doc.setFontSize(13);
-    doc.text(settings.kopSurat.line3, centerX, textStartY + 14.5, { align: 'center' });
-  }
-  doc.setFont(pdfFont, 'normal');
-  doc.setFontSize(8.5);
-  contactLines.forEach((line, idx) => {
-    doc.text(line, centerX, textStartY + 19 + idx * 3.8, { align: 'center' });
+  cursorY = drawPdfKopSurat({
+    doc,
+    kop: settings.kopSurat,
+    leftLogoPng,
+    rightLogoPng,
+    marginX,
+    startY: cursorY,
+    fallbackFont: pdfFont,
   });
-  const lineY = cursorY + kopHeightMm + 1.5;
-  doc.setLineWidth(0.8);
-  doc.line(marginX, lineY, pageWidth - marginX, lineY);
-  doc.setLineWidth(0.25);
-  doc.line(marginX, lineY + 1, pageWidth - marginX, lineY + 1);
-  cursorY = lineY + 7;
 
+  const centerX = pageWidth / 2;
+  const upperTitle = title.toUpperCase();
   // Title
   doc.setFont(pdfFont, 'bold');
-  doc.setFontSize(11.5);
-  doc.text(title.toUpperCase(), centerX, cursorY, { align: 'center' });
+  doc.setFontSize(12);
+  doc.text(upperTitle, centerX, cursorY, { align: 'center' });
+  const titleW = doc.getTextWidth(upperTitle);
+  doc.setLineWidth(0.35);
+  doc.line(centerX - titleW / 2, cursorY + 1, centerX + titleW / 2, cursorY + 1);
   cursorY += 5;
   if (subtitle) {
     doc.setFont(pdfFont, 'normal');
-    doc.setFontSize(8.5);
+    doc.setFontSize(9);
     doc.text(subtitle, centerX, cursorY, { align: 'center' });
     cursorY += 6;
   }
@@ -699,17 +829,25 @@ export async function exportDatasetToPdf(options: {
     styles: {
       font: pdfFont,
       fontSize: 8,
-      cellPadding: 2,
-      lineColor: [148, 163, 184],
+      textColor: 0,
+      cellPadding: 1.5,
+      lineColor: [0, 0, 0],
       lineWidth: 0.2,
     },
-    headStyles: { fillColor: [15, 23, 42], textColor: 255, fontStyle: 'bold' },
+    headStyles: {
+      fillColor: [241, 245, 249],
+      textColor: 0,
+      fontStyle: 'bold',
+      lineColor: [0, 0, 0],
+      lineWidth: 0.2,
+    },
     head: [headers],
     body: rows.length === 0 ? [headers.map(() => '-')] : rows,
   });
 
   cursorY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
 
+  const PX_TO_MM = 0.264583;
   const kepsekSigSizePx = Math.max(
     16,
     Math.min(260, sigPos.principalSignatureSize ?? sigPos.signatureSize ?? 60)
@@ -719,7 +857,7 @@ export async function exportDatasetToPdf(options: {
     Math.min(260, sigPos.teacherSignatureSize ?? sigPos.signatureSize ?? 60)
   );
   const stampSizePx = Math.max(20, Math.min(260, sigPos.stampSize ?? 70));
-  const stampMm = Number((stampSizePx * 0.285).toFixed(2));
+  const stampMm = Number((stampSizePx * PX_TO_MM).toFixed(2));
   const kepsekSigOffsetX = sigPos.principalSigOffsetX ?? 0;
   const kepsekSigOffsetY = sigPos.principalSigOffsetY ?? 0;
   const guruSigOffsetX = sigPos.teacherSigOffsetX ?? 0;
@@ -729,7 +867,7 @@ export async function exportDatasetToPdf(options: {
 
   if (cursorY > pageHeight - 48) {
     doc.addPage();
-    cursorY = 18;
+    cursorY = 14;
   }
 
   const drawPdfSigBlock = (
@@ -745,15 +883,15 @@ export async function exportDatasetToPdf(options: {
     sigOffsetX: number,
     sigOffsetY: number
   ) => {
-    const sigH = Number((sigPx * 0.265).toFixed(2));
+    const sigH = Number((sigPx * PX_TO_MM).toFixed(2));
     const sigW = Number((sigH * 2.38).toFixed(2));
     doc.setFont(pdfFont, 'normal');
-    doc.setFontSize(9);
+    doc.setFontSize(9.5);
     doc.text(topLabel, xMm, yMm);
     doc.text(roleTitle, xMm, yMm + 4.5);
     if (withStamp && stampPng) {
-      const stampCenterX = xMm + 4 + stampOffsetX * 0.265;
-      const stampCenterY = yMm + 15.5 + stampOffsetY * 0.265;
+      const stampCenterX = xMm + 4.8 + stampOffsetX * PX_TO_MM;
+      const stampCenterY = yMm + 16 + stampOffsetY * PX_TO_MM;
       doc.addImage(
         stampPng,
         'PNG',
@@ -767,16 +905,19 @@ export async function exportDatasetToPdf(options: {
       doc.addImage(
         sigUrl,
         'PNG',
-        xMm + sigOffsetX * 0.265,
-        yMm + 14.5 - sigH / 2 + sigOffsetY * 0.265,
+        xMm + sigOffsetX * PX_TO_MM,
+        yMm + 15 - sigH / 2 + sigOffsetY * PX_TO_MM,
         sigW,
         sigH
       );
     }
     doc.setFont(pdfFont, 'bold');
-    doc.text(personName, xMm, yMm + 25);
+    doc.text(personName, xMm, yMm + 25.5);
+    const nameW = doc.getTextWidth(personName);
+    doc.setLineWidth(0.25);
+    doc.line(xMm, yMm + 26.2, xMm + nameW, yMm + 26.2);
     doc.setFont(pdfFont, 'normal');
-    doc.text(`NIP. ${personNip || '-'}`, xMm, yMm + 29.5);
+    doc.text(`NIP. ${personNip || '-'}`, xMm, yMm + 30);
   };
 
   const stampOnKepsek = sigPos.showStamp;
@@ -870,6 +1011,33 @@ export async function exportPreviewDomToWordDoc(options: {
     sigCanvas.replaceWith(wrapper);
   }
 
+  // Convert chart grid into an MS Word-compatible table layout
+  const chartGrids = Array.from(clone.querySelectorAll('[data-chart-grid="true"]')) as HTMLElement[];
+  chartGrids.forEach((grid) => {
+    const cols = Number(grid.getAttribute('data-chart-cols') || '2');
+    const cards = Array.from(grid.querySelectorAll('[data-chart-card="true"]')) as HTMLElement[];
+    if (cards.length === 0) return;
+    const rowsHtml: string[] = [];
+    for (let i = 0; i < cards.length; i += cols) {
+      const cells: string[] = [];
+      for (let c = 0; c < cols; c++) {
+        const card = cards[i + c];
+        const widthPct = Math.floor(100 / cols);
+        if (card) {
+          cells.push(
+            `<td style="width:${widthPct}%; vertical-align:top; border:1px solid #000000; padding:8px; background:#ffffff;">${card.innerHTML}</td>`
+          );
+        } else {
+          cells.push(`<td style="width:${widthPct}%; border:none; padding:8px;"></td>`);
+        }
+      }
+      rowsHtml.push(`<tr>${cells.join('')}</tr>`);
+    }
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = `<table style="width:100%; border-collapse:separate; border-spacing:8px;">${rowsHtml.join('')}</table>`;
+    grid.replaceWith(wrapper);
+  });
+
   // Convert any SVG/WebP images inside clone to PNG DataURLs so MS Word displays them reliably
   const imgs = Array.from(clone.querySelectorAll('img'));
   await Promise.all(
@@ -888,6 +1056,7 @@ export async function exportPreviewDomToWordDoc(options: {
   clone.style.boxShadow = 'none';
   clone.style.padding = '0';
   clone.style.margin = '0';
+  clone.style.width = '100%';
   clone.style.maxWidth = 'none';
   clone.style.minWidth = '0';
 

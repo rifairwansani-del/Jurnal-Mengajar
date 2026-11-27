@@ -26,6 +26,7 @@ import {
   GradeEntry,
   JournalEntry,
   PortalDatabase,
+  ReportChartId,
   ReportPrintPreferences,
   ReportSectionId,
   SemesterType,
@@ -36,7 +37,12 @@ import {
   TeachingSchedule,
   UserAccount,
 } from '../types';
-import { normalizeEmailId, toFirestoreSafeId } from '../utils/portalHelpers';
+import {
+  normalizeEmailId,
+  normalizeKopSurat,
+  normalizePhotoInputUrl,
+  toFirestoreSafeId,
+} from '../utils/portalHelpers';
 
 const VALID_REPORT_SECTION_IDS: ReportSectionId[] = [
   'journal',
@@ -48,6 +54,15 @@ const VALID_REPORT_SECTION_IDS: ReportSectionId[] = [
   'grades_leger',
   'students_roster',
   'teacher_activity',
+  'charts',
+];
+
+const VALID_REPORT_CHART_IDS: ReportChartId[] = [
+  'bar_class',
+  'line_trend',
+  'doughnut_attendance',
+  'hbar_subject',
+  'pie_kkm',
 ];
 
 function clampStr(value: unknown, maxLen: number): string {
@@ -103,9 +118,16 @@ function normalizeReportPrefs(
     selectedReportTypes = fallback.selectedReportTypes;
   }
 
+  const selectedChartTypes = Array.isArray(raw?.selectedChartTypes)
+    ? raw.selectedChartTypes.filter((id): id is ReportChartId =>
+        VALID_REPORT_CHART_IDS.includes(id as ReportChartId)
+      )
+    : fallback.selectedChartTypes || VALID_REPORT_CHART_IDS;
+
   return {
     ...merged,
     selectedReportTypes,
+    selectedChartTypes,
     showSignatureImage: raw?.showSignatureImage ?? fallback.showSignatureImage,
   };
 }
@@ -167,18 +189,7 @@ function normalizeSettings(raw: Partial<SystemSettings> | undefined): SystemSett
       cleanRaw.reportPrintPreferences,
       fallback.reportPrintPreferences
     ),
-    kopSurat: {
-      ...fallback.kopSurat,
-      ...(cleanRaw.kopSurat || {}),
-      logoLeftSize: Math.max(
-        28,
-        Math.min(150, Number(cleanRaw.kopSurat?.logoLeftSize ?? fallback.kopSurat.logoLeftSize ?? 72) || 72)
-      ),
-      logoRightSize: Math.max(
-        28,
-        Math.min(150, Number(cleanRaw.kopSurat?.logoRightSize ?? fallback.kopSurat.logoRightSize ?? 72) || 72)
-      ),
-    },
+    kopSurat: normalizeKopSurat(cleanRaw.kopSurat, fallback.kopSurat),
     masterClasses: Array.isArray(cleanRaw.masterClasses)
       ? cleanRaw.masterClasses.slice(0, 100)
       : fallback.masterClasses,
@@ -206,7 +217,7 @@ function normalizeStudent(raw: Partial<Student>, fallbackIdx = 0): Student {
     birthPlace: clampStr(raw.birthPlace, 120),
     birthDate: clampStr(raw.birthDate, 32),
     email: clampStr(raw.email, 160),
-    photo: clampStr(raw.photo, 350000),
+    photo: clampStr(normalizePhotoInputUrl(typeof raw.photo === 'string' ? raw.photo : ''), 350000),
     address: clampStr(raw.address, 400),
     phone: clampStr(raw.phone, 40),
     gender: raw.gender === 'P' ? 'P' : 'L',
@@ -239,7 +250,7 @@ function normalizeTeacher(raw: Partial<Teacher>, fallbackIdx = 0): Teacher {
         : 'PNS',
     status: raw.status === 'Cuti' || raw.status === 'Nonaktif' ? raw.status : 'Aktif',
     address: clampStr(raw.address, 400),
-    photo: clampStr(raw.photo, 350000),
+    photo: clampStr(normalizePhotoInputUrl(typeof raw.photo === 'string' ? raw.photo : ''), 350000),
   };
 }
 
@@ -377,6 +388,19 @@ async function upsertDocSafe(
   }
 }
 
+interface CredentialSyncRecord {
+  accountId: string;
+  username: string;
+  email: string;
+  name: string;
+  role: UserAccount['role'];
+  nip: string;
+  status: 'Aktif' | 'Nonaktif';
+  passwordHash: string;
+  salt: string;
+  updatedAt: string;
+}
+
 export function usePortalStore() {
   const [db, setDb] = useState<PortalDatabase>(createEmptyDatabase);
   const [authLoading, setAuthLoading] = useState(true);
@@ -389,7 +413,11 @@ export function usePortalStore() {
   const dbRef = useRef<PortalDatabase>(db);
   dbRef.current = db;
 
-  const sessionOverrideRef = useRef<{ academicYear?: string; semester?: SemesterType }>({});
+  const sessionOverrideRef = useRef<{
+    academicYear?: string;
+    semester?: SemesterType;
+    applyOverride?: boolean;
+  }>({});
   const unsubsRef = useRef<Unsubscribe[]>([]);
   const authModeRef = useRef<'none' | 'google' | 'credentials'>('none');
   const localTokenRef = useRef<string | null>(null);
@@ -655,6 +683,89 @@ export function usePortalStore() {
           }
         }
 
+        const resolvedRole = isBootstrapAdmin
+          ? 'Admin'
+          : accountRecord?.role || 'Guru Mapel';
+        const isAdminUser = isBootstrapAdmin || resolvedRole === 'Admin';
+
+        // Sync Admin credentials bi-directionally between Cloud Firestore (/credential_sync) and this Express server
+        if (isAdminUser) {
+          try {
+            const idToken = await firebaseUser.getIdToken();
+            const cloudCredSnap = await getDocs(collection(firestoreDb, 'credential_sync'));
+            const cloudMap = new Map<string, CredentialSyncRecord>();
+            cloudCredSnap.docs.forEach((d) => {
+              const raw = stripServerMeta(d.data() as Record<string, unknown>) as unknown as CredentialSyncRecord;
+              if (raw && raw.accountId && raw.passwordHash && raw.salt) {
+                cloudMap.set(normalizeEmailId(raw.accountId), raw);
+              }
+            });
+
+            const syncRes = await fetch('/api/accounts/credentials-sync', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${idToken}`,
+              },
+              body: JSON.stringify({
+                credentials: Array.from(cloudMap.values()),
+              }),
+            });
+
+            if (syncRes.ok) {
+              const syncJson = (await syncRes.json()) as {
+                ok?: boolean;
+                credentials?: CredentialSyncRecord[];
+              };
+              const mergedList = Array.isArray(syncJson.credentials) ? syncJson.credentials : [];
+              const metaOut: Record<string, { username: string; hasPassword: boolean }> = {};
+              const toPushToCloud: CredentialSyncRecord[] = [];
+
+              mergedList.forEach((rec) => {
+                const id = normalizeEmailId(rec.accountId || rec.email);
+                if (!id) return;
+                metaOut[id] = {
+                  username: rec.username || '',
+                  hasPassword: Boolean(rec.passwordHash && rec.salt),
+                };
+                const existingCloud = cloudMap.get(id);
+                const localTime = Date.parse(rec.updatedAt || '') || 0;
+                const cloudTime = existingCloud ? Date.parse(existingCloud.updatedAt || '') || 0 : -1;
+                if (!existingCloud || localTime > cloudTime) {
+                  toPushToCloud.push(rec);
+                }
+              });
+
+              credentialsMetaRef.current = {
+                ...credentialsMetaRef.current,
+                ...metaOut,
+              };
+
+              if (toPushToCloud.length > 0) {
+                const ops: BatchWriteOp[] = toPushToCloud.map((rec) => {
+                  const id = normalizeEmailId(rec.accountId || rec.email);
+                  const exists = cloudMap.has(id);
+                  return {
+                    type: exists ? 'update' : 'set',
+                    collectionName: 'credential_sync',
+                    docId: id,
+                    data: exists
+                      ? { ...rec, serverUpdatedAt: serverTimestamp() }
+                      : {
+                          ...rec,
+                          serverCreatedAt: serverTimestamp(),
+                          serverUpdatedAt: serverTimestamp(),
+                        },
+                  };
+                });
+                await commitBatchChunked(ops);
+              }
+            }
+          } catch {
+            // Non-fatal; fallback to metadata endpoint
+          }
+        }
+
         // Load credential metadata (username & hasPassword) from Express server
         try {
           const idToken = await firebaseUser.getIdToken();
@@ -667,7 +778,10 @@ export function usePortalStore() {
               items?: Record<string, { username: string; hasPassword: boolean }>;
             };
             if (metaJson.ok && metaJson.items) {
-              credentialsMetaRef.current = metaJson.items;
+              credentialsMetaRef.current = {
+                ...credentialsMetaRef.current,
+                ...metaJson.items,
+              };
             }
           }
         } catch {
@@ -675,50 +789,62 @@ export function usePortalStore() {
         }
 
         const settingsDocRef = doc(firestoreDb, 'settings', 'global');
+        let resolvedSettings: SystemSettings = defaultSettings;
         try {
           const settingsSnap = await getDoc(settingsDocRef);
+          const wantsOverride = Boolean(sessionOverrideRef.current.applyOverride);
           if (!settingsSnap.exists()) {
-            const initialSettings = {
+            const initialSettings = normalizeSettings({
               ...defaultSettings,
-              ...(sessionOverrideRef.current.academicYear
+              ...(wantsOverride && sessionOverrideRef.current.academicYear
                 ? { academicYear: sessionOverrideRef.current.academicYear }
                 : {}),
-              ...(sessionOverrideRef.current.semester
+              ...(wantsOverride && sessionOverrideRef.current.semester
                 ? { semester: sessionOverrideRef.current.semester }
                 : {}),
-            };
+            });
+            resolvedSettings = initialSettings;
             await setDoc(settingsDocRef, {
               ...stripUndefined(initialSettings),
               serverCreatedAt: serverTimestamp(),
               serverUpdatedAt: serverTimestamp(),
             });
-          } else if (
-            sessionOverrideRef.current.academicYear ||
-            sessionOverrideRef.current.semester
-          ) {
-            await updateDoc(settingsDocRef, {
-              ...(sessionOverrideRef.current.academicYear
-                ? { academicYear: sessionOverrideRef.current.academicYear }
-                : {}),
-              ...(sessionOverrideRef.current.semester
-                ? { semester: sessionOverrideRef.current.semester }
-                : {}),
-              serverUpdatedAt: serverTimestamp(),
-            });
+          } else {
+            const savedSettings = normalizeSettings(
+              stripServerMeta(settingsSnap.data() as Record<string, unknown>) as Partial<SystemSettings>
+            );
+            resolvedSettings = savedSettings;
+            if (
+              wantsOverride &&
+              (sessionOverrideRef.current.academicYear || sessionOverrideRef.current.semester)
+            ) {
+              const nextYear = sessionOverrideRef.current.academicYear || savedSettings.academicYear;
+              const nextSem = sessionOverrideRef.current.semester || savedSettings.semester;
+              if (nextYear !== savedSettings.academicYear || nextSem !== savedSettings.semester) {
+                resolvedSettings = {
+                  ...savedSettings,
+                  academicYear: nextYear,
+                  semester: nextSem,
+                };
+                await updateDoc(settingsDocRef, {
+                  academicYear: nextYear,
+                  semester: nextSem,
+                  serverUpdatedAt: serverTimestamp(),
+                });
+              }
+            }
           }
         } catch (err) {
           reportFirestoreError(err, OperationType.WRITE, 'settings/global');
         }
 
-        const resolvedRole = isBootstrapAdmin
-          ? 'Admin'
-          : accountRecord?.role || 'Guru Mapel';
         const resolvedName =
-          accountRecord?.name || firebaseUser.displayName || defaultSettings.teacherName;
+          accountRecord?.name || firebaseUser.displayName || resolvedSettings.teacherName || defaultSettings.teacherName;
         const ownMeta = credentialsMetaRef.current[emailLower];
 
         setDb((prev) => ({
           ...prev,
+          settings: resolvedSettings,
           session: {
             isLoggedIn: true,
             authMethod: 'google',
@@ -727,31 +853,57 @@ export function usePortalStore() {
             email: emailLower,
             userName: resolvedName,
             userRole: resolvedRole,
-            academicYear:
-              sessionOverrideRef.current.academicYear || prev.settings.academicYear,
-            semester:
-              sessionOverrideRef.current.semester || prev.settings.semester,
+            academicYear: resolvedSettings.academicYear,
+            semester: resolvedSettings.semester,
           },
         }));
+
+        const makeInitialGate = () => {
+          let settled = false;
+          let resolveFn!: () => void;
+          const promise = new Promise<void>((res) => {
+            resolveFn = res;
+          });
+          const mark = () => {
+            if (!settled) {
+              settled = true;
+              resolveFn();
+            }
+          };
+          return { promise, mark };
+        };
+
+        const gSettings = makeInitialGate();
+        const gAccounts = makeInitialGate();
+        const gStudents = makeInitialGate();
+        const gTeachers = makeInitialGate();
+        const gSchedules = makeInitialGate();
+        const gJournals = makeInitialGate();
+        const gGrades = makeInitialGate();
 
         const unsubSettings = onSnapshot(
           settingsDocRef,
           (snapshot) => {
-            if (!snapshot.exists()) return;
-            const normalized = normalizeSettings(
-              stripServerMeta(snapshot.data() as Record<string, unknown>) as Partial<SystemSettings>
-            );
-            setDb((prev) => ({
-              ...prev,
-              settings: normalized,
-              session: {
-                ...prev.session,
-                academicYear: normalized.academicYear,
-                semester: normalized.semester,
-              },
-            }));
+            if (snapshot.exists()) {
+              const normalized = normalizeSettings(
+                stripServerMeta(snapshot.data() as Record<string, unknown>) as Partial<SystemSettings>
+              );
+              setDb((prev) => ({
+                ...prev,
+                settings: normalized,
+                session: {
+                  ...prev.session,
+                  academicYear: normalized.academicYear,
+                  semester: normalized.semester,
+                },
+              }));
+            }
+            gSettings.mark();
           },
-          (error) => reportFirestoreError(error, OperationType.GET, 'settings/global')
+          (error) => {
+            gSettings.mark();
+            reportFirestoreError(error, OperationType.GET, 'settings/global');
+          }
         );
 
         const unsubAccounts = onSnapshot(
@@ -787,8 +939,12 @@ export function usePortalStore() {
                   }
                 : prev.session,
             }));
+            gAccounts.mark();
           },
-          (error) => reportFirestoreError(error, OperationType.LIST, 'accounts')
+          (error) => {
+            gAccounts.mark();
+            reportFirestoreError(error, OperationType.LIST, 'accounts');
+          }
         );
 
         const unsubStudents = onSnapshot(
@@ -801,8 +957,12 @@ export function usePortalStore() {
               )
             );
             setDb((prev) => ({ ...prev, students: list }));
+            gStudents.mark();
           },
-          (error) => reportFirestoreError(error, OperationType.LIST, 'students')
+          (error) => {
+            gStudents.mark();
+            reportFirestoreError(error, OperationType.LIST, 'students');
+          }
         );
 
         const unsubTeachers = onSnapshot(
@@ -815,8 +975,12 @@ export function usePortalStore() {
               )
             );
             setDb((prev) => ({ ...prev, teachers: list }));
+            gTeachers.mark();
           },
-          (error) => reportFirestoreError(error, OperationType.LIST, 'teachers')
+          (error) => {
+            gTeachers.mark();
+            reportFirestoreError(error, OperationType.LIST, 'teachers');
+          }
         );
 
         const unsubSchedules = onSnapshot(
@@ -829,8 +993,12 @@ export function usePortalStore() {
               )
             );
             setDb((prev) => ({ ...prev, schedules: list }));
+            gSchedules.mark();
           },
-          (error) => reportFirestoreError(error, OperationType.LIST, 'schedules')
+          (error) => {
+            gSchedules.mark();
+            reportFirestoreError(error, OperationType.LIST, 'schedules');
+          }
         );
 
         const unsubJournals = onSnapshot(
@@ -845,8 +1013,12 @@ export function usePortalStore() {
               )
               .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
             setDb((prev) => ({ ...prev, journals: list }));
+            gJournals.mark();
           },
-          (error) => reportFirestoreError(error, OperationType.LIST, 'journals')
+          (error) => {
+            gJournals.mark();
+            reportFirestoreError(error, OperationType.LIST, 'journals');
+          }
         );
 
         const unsubGrades = onSnapshot(
@@ -859,8 +1031,12 @@ export function usePortalStore() {
               )
             );
             setDb((prev) => ({ ...prev, grades: list }));
+            gGrades.mark();
           },
-          (error) => reportFirestoreError(error, OperationType.LIST, 'grades')
+          (error) => {
+            gGrades.mark();
+            reportFirestoreError(error, OperationType.LIST, 'grades');
+          }
         );
 
         unsubsRef.current = [
@@ -872,6 +1048,19 @@ export function usePortalStore() {
           unsubJournals,
           unsubGrades,
         ];
+
+        await Promise.race([
+          Promise.all([
+            gSettings.promise,
+            gAccounts.promise,
+            gStudents.promise,
+            gTeachers.promise,
+            gSchedules.promise,
+            gJournals.promise,
+            gGrades.promise,
+          ]),
+          new Promise<void>((resolve) => window.setTimeout(resolve, 6000)),
+        ]);
       } finally {
         setDataLoading(false);
         setAuthLoading(false);
@@ -884,14 +1073,114 @@ export function usePortalStore() {
     };
   }, [cleanupListeners, reportFirestoreError]);
 
-  // Sync live Firestore snapshot to Express server so username/password sessions stay up to date
+  // Sync live Firestore snapshot to Express server; promote un-synced local credential edits into Firestore first
   useEffect(() => {
     if (!db.session.isLoggedIn || db.session.authMethod !== 'google' || dataLoading) {
       return;
     }
     const timer = window.setTimeout(() => {
-      initialServerSyncedRef.current = true;
-      void pushSnapshotToServer(dbRef.current, true);
+      void (async () => {
+        if (!initialServerSyncedRef.current) {
+          initialServerSyncedRef.current = true;
+          try {
+            const token = await getActiveBearerToken();
+            if (token) {
+              const stateRes = await fetch('/api/portal/state', {
+                headers: { Authorization: `Bearer ${token}` },
+              });
+              if (stateRes.ok) {
+                const stateJson = (await stateRes.json()) as {
+                  ok?: boolean;
+                  database?: {
+                    students?: Student[];
+                    teachers?: Teacher[];
+                    schedules?: TeachingSchedule[];
+                    journals?: JournalEntry[];
+                    grades?: GradeEntry[];
+                  } | null;
+                  meta?: { lastLocalEditAt?: number; lastFirestoreSyncAt?: number };
+                };
+                const lastLocal = Number(stateJson.meta?.lastLocalEditAt) || 0;
+                const lastCloud = Number(stateJson.meta?.lastFirestoreSyncAt) || 0;
+                if (lastLocal > lastCloud && stateJson.database) {
+                  const localDb = stateJson.database;
+                  const ops: BatchWriteOp[] = [];
+                  const cur = dbRef.current;
+                  const studentMap = new Map(cur.students.map((s) => [s.id, s]));
+                  (localDb.students || []).forEach((raw, idx) => {
+                    const clean = normalizeStudent(raw, idx);
+                    if (!studentMap.has(clean.id)) {
+                      ops.push({
+                        type: 'set',
+                        collectionName: 'students',
+                        docId: clean.id,
+                        data: { ...clean, serverCreatedAt: serverTimestamp(), serverUpdatedAt: serverTimestamp() },
+                      });
+                    }
+                  });
+                  const teacherMap = new Map(cur.teachers.map((t) => [t.id, t]));
+                  (localDb.teachers || []).forEach((raw, idx) => {
+                    const clean = normalizeTeacher(raw, idx);
+                    if (!teacherMap.has(clean.id)) {
+                      ops.push({
+                        type: 'set',
+                        collectionName: 'teachers',
+                        docId: clean.id,
+                        data: { ...clean, serverCreatedAt: serverTimestamp(), serverUpdatedAt: serverTimestamp() },
+                      });
+                    }
+                  });
+                  const schMap = new Map(cur.schedules.map((s) => [s.id, s]));
+                  (localDb.schedules || []).forEach((raw, idx) => {
+                    const clean = normalizeSchedule(raw, idx);
+                    if (!schMap.has(clean.id)) {
+                      ops.push({
+                        type: 'set',
+                        collectionName: 'schedules',
+                        docId: clean.id,
+                        data: { ...clean, serverCreatedAt: serverTimestamp(), serverUpdatedAt: serverTimestamp() },
+                      });
+                    }
+                  });
+                  const jrnMap = new Map(cur.journals.map((j) => [j.id, j]));
+                  (localDb.journals || []).forEach((raw, idx) => {
+                    const clean = normalizeJournal(raw, idx);
+                    if (!jrnMap.has(clean.id)) {
+                      ops.push({
+                        type: 'set',
+                        collectionName: 'journals',
+                        docId: clean.id,
+                        data: { ...clean, serverCreatedAt: serverTimestamp(), serverUpdatedAt: serverTimestamp() },
+                      });
+                    }
+                  });
+                  const grdMap = new Map(cur.grades.map((g) => [g.id, g]));
+                  (localDb.grades || []).forEach((raw, idx) => {
+                    const clean = normalizeGrade(raw, idx);
+                    const existing = grdMap.get(clean.id);
+                    if (!existing || clean.updatedAt > existing.updatedAt) {
+                      ops.push({
+                        type: existing ? 'update' : 'set',
+                        collectionName: 'grades',
+                        docId: clean.id,
+                        data: existing
+                          ? { ...clean, serverUpdatedAt: serverTimestamp() }
+                          : { ...clean, serverCreatedAt: serverTimestamp(), serverUpdatedAt: serverTimestamp() },
+                      });
+                    }
+                  });
+                  if (ops.length > 0) {
+                    await commitBatchChunked(ops);
+                  }
+                }
+              }
+            }
+          } catch {
+            // Non-fatal
+          }
+        }
+        await pushSnapshotToServer(dbRef.current, true);
+      })();
     }, 550);
     return () => window.clearTimeout(timer);
   }, [
@@ -905,12 +1194,17 @@ export function usePortalStore() {
     db.grades,
     db.settings,
     dataLoading,
+    getActiveBearerToken,
     pushSnapshotToServer,
   ]);
 
   const loginWithGoogle = useCallback(
-    async (academicYear: string, semester: SemesterType) => {
-      sessionOverrideRef.current = { academicYear, semester };
+    async (academicYear: string, semester: SemesterType, applyPeriodOverride = false) => {
+      sessionOverrideRef.current = {
+        academicYear,
+        semester,
+        applyOverride: Boolean(applyPeriodOverride),
+      };
       setSigningIn(true);
       try {
         await signInWithPopup(auth, googleAuthProvider);
@@ -926,7 +1220,8 @@ export function usePortalStore() {
       username: string,
       password: string,
       academicYear: string,
-      semester: SemesterType
+      semester: SemesterType,
+      applyPeriodOverride = false
     ) => {
       setSigningIn(true);
       try {
@@ -971,10 +1266,17 @@ export function usePortalStore() {
         setPendingUserEmail(null);
 
         const snapDb = json.snapshot?.database;
+        const baseSettings = snapDb?.settings || createDefaultSettings();
         const mergedSettings = normalizeSettings({
-          ...(snapDb?.settings || createDefaultSettings()),
-          academicYear: academicYear || snapDb?.settings?.academicYear || '2025/2026',
-          semester: semester || snapDb?.settings?.semester || 'Ganjil',
+          ...baseSettings,
+          academicYear:
+            applyPeriodOverride && academicYear
+              ? academicYear
+              : baseSettings.academicYear || academicYear || '2025/2026',
+          semester:
+            applyPeriodOverride && semester
+              ? semester
+              : baseSettings.semester || semester || 'Ganjil',
         });
 
         const accountsList = Array.isArray(snapDb?.accounts)
@@ -1857,6 +2159,7 @@ export function usePortalStore() {
         .trim()
         .toLowerCase();
       let resolvedHasPassword = Boolean(account.hasPassword);
+      let syncedCredentialRecord: CredentialSyncRecord | null = null;
 
       if (credentials !== undefined || resolvedUsername) {
         try {
@@ -1886,6 +2189,7 @@ export function usePortalStore() {
               ok?: boolean;
               error?: string;
               meta?: { username: string; hasPassword: boolean };
+              credentialRecord?: CredentialSyncRecord;
             };
             if (!res.ok || !json.ok) {
               return {
@@ -1900,6 +2204,9 @@ export function usePortalStore() {
                 delete credentialsMetaRef.current[previousId];
               }
               credentialsMetaRef.current[emailLower] = json.meta;
+            }
+            if (json.credentialRecord && json.credentialRecord.passwordHash && json.credentialRecord.salt) {
+              syncedCredentialRecord = json.credentialRecord;
             }
           }
         } catch {
@@ -1965,6 +2272,7 @@ export function usePortalStore() {
           previousId !== DEFAULT_ADMIN_EMAIL
         ) {
           ops.push({ type: 'delete', collectionName: 'accounts', docId: previousId });
+          ops.push({ type: 'delete', collectionName: 'credential_sync', docId: previousId });
         }
         if (targetSnap.exists()) {
           const existingData = targetSnap.data() as Record<string, unknown>;
@@ -2006,6 +2314,21 @@ export function usePortalStore() {
               serverCreatedAt: serverTimestamp(),
               serverUpdatedAt: serverTimestamp(),
             },
+          });
+        }
+        if (isAdminSession && syncedCredentialRecord) {
+          const credSyncSnap = await getDoc(doc(firestoreDb, 'credential_sync', emailLower));
+          ops.push({
+            type: credSyncSnap.exists() ? 'update' : 'set',
+            collectionName: 'credential_sync',
+            docId: emailLower,
+            data: credSyncSnap.exists()
+              ? { ...syncedCredentialRecord, serverUpdatedAt: serverTimestamp() }
+              : {
+                  ...syncedCredentialRecord,
+                  serverCreatedAt: serverTimestamp(),
+                  serverUpdatedAt: serverTimestamp(),
+                },
           });
         }
         await commitBatchChunked(ops);
@@ -2151,9 +2474,20 @@ export function usePortalStore() {
         return;
       }
 
-      void deleteDoc(doc(firestoreDb, 'accounts', accountId)).catch((err) =>
-        reportFirestoreError(err, OperationType.DELETE, `accounts/${accountId}`)
-      );
+      void (async () => {
+        try {
+          const ops: BatchWriteOp[] = [
+            { type: 'delete', collectionName: 'accounts', docId: accountId },
+          ];
+          const credSyncSnap = await getDoc(doc(firestoreDb, 'credential_sync', normalized));
+          if (credSyncSnap.exists()) {
+            ops.push({ type: 'delete', collectionName: 'credential_sync', docId: normalized });
+          }
+          await commitBatchChunked(ops);
+        } catch (err) {
+          reportFirestoreError(err, OperationType.DELETE, `accounts/${accountId}`);
+        }
+      })();
     },
     [getActiveBearerToken, pushSnapshotToServer, reportFirestoreError]
   );
@@ -2203,14 +2537,26 @@ export function usePortalStore() {
         return;
       }
 
-      const ops: BatchWriteOp[] = deletableIds.map((id) => ({
-        type: 'delete',
-        collectionName: 'accounts',
-        docId: id,
-      }));
-      void commitBatchChunked(ops).catch((err) =>
-        reportFirestoreError(err, OperationType.DELETE, 'accounts')
-      );
+      void (async () => {
+        try {
+          const ops: BatchWriteOp[] = deletableIds.map((id) => ({
+            type: 'delete',
+            collectionName: 'accounts',
+            docId: id,
+          }));
+          const credSnap = await getDocs(collection(firestoreDb, 'credential_sync'));
+          const existingCredIds = new Set(credSnap.docs.map((d) => d.id));
+          deletableIds.forEach((id) => {
+            const norm = normalizeEmailId(id);
+            if (existingCredIds.has(norm)) {
+              ops.push({ type: 'delete', collectionName: 'credential_sync', docId: norm });
+            }
+          });
+          await commitBatchChunked(ops);
+        } catch (err) {
+          reportFirestoreError(err, OperationType.DELETE, 'accounts');
+        }
+      })();
     },
     [getActiveBearerToken, pushSnapshotToServer, reportFirestoreError]
   );

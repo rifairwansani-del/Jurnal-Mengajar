@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   AlertCircle,
   ArrowRight,
@@ -22,12 +22,17 @@ interface LoginViewProps {
   signingIn: boolean;
   accessDeniedMessage: string | null;
   pendingUserEmail: string | null;
-  onGoogleLogin: (academicYear: string, semester: SemesterType) => Promise<void>;
+  onGoogleLogin: (
+    academicYear: string,
+    semester: SemesterType,
+    applyPeriodOverride?: boolean
+  ) => Promise<void>;
   onCredentialsLogin: (
     username: string,
     password: string,
     academicYear: string,
-    semester: SemesterType
+    semester: SemesterType,
+    applyPeriodOverride?: boolean
   ) => Promise<void>;
   onSwitchAccount: () => Promise<void>;
 }
@@ -45,15 +50,22 @@ export function LoginView({
   const [loginMode, setLoginMode] = useState<'credentials' | 'google'>('credentials');
   const [academicYear, setAcademicYear] = useState(settings.academicYear || '2025/2026');
   const [semester, setSemester] = useState<SemesterType>(settings.semester || 'Ganjil');
+  const [periodChangedByUser, setPeriodChangedByUser] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
+  useEffect(() => {
+    if (periodChangedByUser) return;
+    if (settings.academicYear) setAcademicYear(settings.academicYear);
+    if (settings.semester) setSemester(settings.semester);
+  }, [settings.academicYear, settings.semester, periodChangedByUser]);
+
   const handleGoogleClick = async () => {
     setErrorMsg('');
     try {
-      await onGoogleLogin(academicYear, semester);
+      await onGoogleLogin(academicYear, semester, periodChangedByUser);
     } catch (err) {
       setErrorMsg(
         err instanceof Error ? err.message : 'Gagal masuk dengan akun Google.'
@@ -70,7 +82,7 @@ export function LoginView({
       return;
     }
     try {
-      await onCredentialsLogin(cleanUser, password, academicYear, semester);
+      await onCredentialsLogin(cleanUser, password, academicYear, semester, periodChangedByUser);
     } catch (err) {
       setErrorMsg(
         err instanceof Error ? err.message : 'Username atau password tidak sesuai.'
@@ -157,7 +169,10 @@ export function LoginView({
                   id="login-year"
                   aria-label="Tahun Ajaran"
                   value={academicYear}
-                  onChange={(e) => setAcademicYear(e.target.value)}
+                  onChange={(e) => {
+                    setAcademicYear(e.target.value);
+                    setPeriodChangedByUser(true);
+                  }}
                   className="w-full bg-transparent text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer"
                 >
                   {settings.masterAcademicYears.map((yr) => (
@@ -176,7 +191,10 @@ export function LoginView({
                   id="login-semester"
                   aria-label="Semester"
                   value={semester}
-                  onChange={(e) => setSemester(e.target.value as SemesterType)}
+                  onChange={(e) => {
+                    setSemester(e.target.value as SemesterType);
+                    setPeriodChangedByUser(true);
+                  }}
                   className="w-full bg-transparent text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer"
                 >
                   <option value="Ganjil">Ganjil</option>

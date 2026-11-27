@@ -133,6 +133,7 @@ export function AccountsView({
     }
     const compressed = await compressImageFileToDataUrl(file, 360, 200000);
     setSchoolStampImage(compressed);
+    onToast('success', 'Stempel sekolah berhasil diunggah. Klik Simpan Akun untuk menerapkan.');
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -453,10 +454,20 @@ export function AccountsView({
       onToast('error', 'Format data akun tidak valid.');
       return;
     }
-    const stats = onImportAccountsBatch(parsed);
-    setPasteText('');
-    setImportModalOpen(false);
-    onToast('success', `Impor selesai: ${stats.added} akun ditambahkan, ${stats.updated} diperbarui.`);
+    onConfirm({
+      title: 'Simpan Data Impor Akun?',
+      description: `Ditemukan ${parsed.length} akun pengguna siap disimpan ke database. Apakah Anda ingin menyimpan data impor ini sekarang?`,
+      confirmLabel: 'Ya, Simpan Akun',
+      onConfirm: () => {
+        const stats = onImportAccountsBatch(parsed);
+        setPasteText('');
+        setImportModalOpen(false);
+        onToast('success', `Impor selesai: ${stats.added} akun ditambahkan, ${stats.updated} diperbarui.`);
+      },
+      onCancel: () => {
+        onToast('info', 'Impor akun pengguna dibatalkan, data belum disimpan.');
+      },
+    });
   };
 
   const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -472,9 +483,19 @@ export function AccountsView({
         onToast('error', 'Tidak ditemukan baris akun valid di dalam file.');
         return;
       }
-      const stats = onImportAccountsBatch(parsed);
-      setImportModalOpen(false);
-      onToast('success', `Impor "${file.name}": ${stats.added} ditambah, ${stats.updated} diperbarui.`);
+      onConfirm({
+        title: 'Simpan Data Impor Akun?',
+        description: `File "${file.name}" berisi ${parsed.length} akun pengguna valid. Apakah Anda ingin menyimpan data impor ini ke database?`,
+        confirmLabel: 'Ya, Simpan Akun',
+        onConfirm: () => {
+          const stats = onImportAccountsBatch(parsed);
+          setImportModalOpen(false);
+          onToast('success', `Impor "${file.name}": ${stats.added} ditambah, ${stats.updated} diperbarui.`);
+        },
+        onCancel: () => {
+          onToast('info', `Impor file "${file.name}" dibatalkan, data belum disimpan.`);
+        },
+      });
     } catch {
       onToast('error', 'Gagal membaca file impor akun.');
     } finally {
@@ -623,6 +644,7 @@ export function AccountsView({
                   orientation: cfg.orientation,
                   paperSize: cfg.paperSize,
                 });
+                onToast('info', 'Menyiapkan tampilan cetak daftar akun...');
               }}
             />
           </div>
@@ -1001,7 +1023,10 @@ export function AccountsView({
                 {signatureImage && (
                   <button
                     type="button"
-                    onClick={() => setSignatureImage('')}
+                    onClick={() => {
+                      setSignatureImage('');
+                      onToast('info', 'Tanda tangan dihapus dari pratinjau formulir akun.');
+                    }}
                     className="text-xs text-rose-600 hover:underline"
                   >
                     Hapus
@@ -1035,7 +1060,10 @@ export function AccountsView({
                     {settings.defaultSchoolStampImage && (
                       <button
                         type="button"
-                        onClick={() => setSchoolStampImage(settings.defaultSchoolStampImage)}
+                        onClick={() => {
+                          setSchoolStampImage(settings.defaultSchoolStampImage);
+                          onToast('info', 'Stempel default sekolah diterapkan ke formulir akun.');
+                        }}
                         className="text-xs text-indigo-600 hover:underline"
                       >
                         Pakai Default
@@ -1044,7 +1072,10 @@ export function AccountsView({
                     {schoolStampImage && (
                       <button
                         type="button"
-                        onClick={() => setSchoolStampImage('')}
+                        onClick={() => {
+                          setSchoolStampImage('');
+                          onToast('info', 'Stempel dihapus dari pratinjau formulir akun.');
+                        }}
                         className="text-xs text-rose-600 hover:underline"
                       >
                         Hapus
@@ -1180,7 +1211,13 @@ export function AccountsView({
         title={`Tanda Tangan Digital${name ? ` — ${name}` : ''}`}
         initialImage={signatureImage}
         onClose={() => setSigModalOpen(false)}
-        onSave={(dataUrl) => setSignatureImage(dataUrl)}
+        onSave={(dataUrl) => {
+          setSignatureImage(dataUrl);
+          onToast(
+            dataUrl ? 'success' : 'info',
+            dataUrl ? 'Tanda tangan digital disimpan ke formulir akun.' : 'Tanda tangan digital dikosongkan.'
+          );
+        }}
       />
     </div>
   );

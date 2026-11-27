@@ -9,7 +9,12 @@ import {
   exportRowsToXlsx,
   printDatasetExact,
 } from '../utils/exportHelpers';
-import { getTodayISO, makeGradeId } from '../utils/portalHelpers';
+import {
+  compareClassNames,
+  compareStudentsByClassAndAbsent,
+  getTodayISO,
+  makeGradeId,
+} from '../utils/portalHelpers';
 import { ConfirmDialogState } from './FeedbackUI';
 import { StudentDetailModal } from './StudentDetailModal';
 import { TableExportToolbar } from './TableExportToolbar';
@@ -46,8 +51,10 @@ export function GradesView({
 
   const classOptions = useMemo(() => {
     const set = new Set(settings.masterClasses);
-    students.forEach((s) => set.add(s.className));
-    return Array.from(set);
+    students.forEach((s) => {
+      if (s.className) set.add(s.className);
+    });
+    return Array.from(set).sort(compareClassNames);
   }, [settings.masterClasses, students]);
 
   // Section 1 state
@@ -80,7 +87,7 @@ export function GradesView({
     () =>
       students
         .filter((s) => s.className === selectedClass)
-        .sort((a, b) => a.name.localeCompare(b.name)),
+        .sort(compareStudentsByClassAndAbsent),
     [students, selectedClass]
   );
 
@@ -217,7 +224,7 @@ export function GradesView({
     () =>
       students
         .filter((s) => s.className === matrixClass)
-        .sort((a, b) => a.name.localeCompare(b.name)),
+        .sort(compareStudentsByClassAndAbsent),
     [students, matrixClass]
   );
 
@@ -316,7 +323,7 @@ export function GradesView({
     onToast('success', 'Template Excel (.xlsx) Nilai berhasil diunduh.');
   };
 
-  const applyImportedGradeRows = (rawRows: string[][]) => {
+  const applyImportedGradeRows = (rawRows: string[][], sourceLabel?: string) => {
     const now = new Date().toISOString();
     const updates: GradeEntry[] = [];
     rawRows.forEach((cols, idx) => {
@@ -368,10 +375,20 @@ export function GradesView({
       onToast('error', 'Tidak ada baris nilai yang cocok dengan NIS/Nama siswa di kelas ini.');
       return;
     }
-    onUpsertGradesBatch(updates);
-    setShowImportBox(false);
-    setPasteText('');
-    onToast('success', `${updates.length} nilai siswa berhasil diimpor & disimpan.`);
+    onConfirm({
+      title: 'Simpan Data Impor Nilai?',
+      description: `Ditemukan ${updates.length} nilai siswa${sourceLabel ? ` dari ${sourceLabel}` : ''} untuk ${selectedExamType} (${selectedSubject} · Kelas ${selectedClass}). Apakah Anda ingin menyimpan nilai impor ini sekarang?`,
+      confirmLabel: 'Ya, Simpan Nilai',
+      onConfirm: () => {
+        onUpsertGradesBatch(updates);
+        setShowImportBox(false);
+        setPasteText('');
+        onToast('success', `${updates.length} nilai siswa berhasil diimpor & disimpan.`);
+      },
+      onCancel: () => {
+        onToast('info', 'Impor nilai siswa dibatalkan, data belum disimpan.');
+      },
+    });
   };
 
   const handleImportPasteGrades = () => {
@@ -403,7 +420,7 @@ export function GradesView({
         header: 1,
         defval: '',
       });
-      applyImportedGradeRows(rows);
+      applyImportedGradeRows(rows, `file "${file.name}"`);
     } catch {
       onToast('error', 'Gagal membaca file Excel/CSV.');
     } finally {
@@ -779,6 +796,7 @@ export function GradesView({
                   orientation: cfg.orientation,
                   paperSize: cfg.paperSize,
                 });
+                onToast('info', `Menyiapkan tampilan cetak daftar nilai ${selectedClass}...`);
               }}
             />
           </div>
@@ -1051,6 +1069,7 @@ export function GradesView({
                   orientation: cfg.orientation,
                   paperSize: cfg.paperSize,
                 });
+                onToast('info', `Menyiapkan tampilan cetak matriks nilai ${matrixClass}...`);
               }}
             />
           </div>

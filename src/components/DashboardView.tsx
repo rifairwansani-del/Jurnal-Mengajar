@@ -536,6 +536,7 @@ export function DashboardView({
                 orientation: cfg.orientation,
                 paperSize: cfg.paperSize,
               });
+              onToast('info', 'Menyiapkan tampilan cetak rekap kelas...');
             }}
           />
         </div>
@@ -664,6 +665,7 @@ export function DashboardView({
                   orientation: cfg.orientation,
                   paperSize: cfg.paperSize,
                 });
+                onToast('info', 'Menyiapkan tampilan cetak jurnal terbaru...');
               }}
             />
           </div>

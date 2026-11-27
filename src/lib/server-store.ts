@@ -15,10 +15,28 @@ const VALID_ROLES: AccountRole[] = [
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const CREDENTIALS_FILE = 'credentials.json';
 const SNAPSHOT_FILE = 'portal-snapshot.json';
+const SECRET_FILE = '.session-secret';
 
-const SESSION_SECRET =
-  (process.env.SESSION_SECRET && process.env.SESSION_SECRET.trim()) ||
-  crypto.randomBytes(32).toString('hex');
+function resolveSessionSecret(): string {
+  if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.trim()) {
+    return process.env.SESSION_SECRET.trim();
+  }
+  try {
+    ensureDataDir();
+    const secretPath = resolveDataFilePath(SECRET_FILE);
+    if (fs.existsSync(secretPath)) {
+      const existing = fs.readFileSync(secretPath, 'utf-8').trim();
+      if (existing.length >= 32) return existing;
+    }
+    const generated = crypto.randomBytes(32).toString('hex');
+    fs.writeFileSync(secretPath, generated, { encoding: 'utf-8', mode: 0o600 });
+    return generated;
+  } catch {
+    return crypto.randomBytes(32).toString('hex');
+  }
+}
+
+const SESSION_SECRET = resolveSessionSecret();
 
 export interface StoredCredential {
   accountId: string;
@@ -280,6 +298,68 @@ export function getAccountAccessInfo(accountId: string): {
   };
 }
 
+export function exportCredentialRecords(): StoredCredential[] {
+  const { credentials } = loadCredentialsEnvelope();
+  return Object.values(credentials).filter(
+    (c) => Boolean(c && c.accountId && c.email && c.passwordHash && c.salt)
+  );
+}
+
+export function mergeSyncedCredentials(
+  incoming: StoredCredential[]
+): StoredCredential[] {
+  const credEnv = loadCredentialsEnvelope();
+  let changed = false;
+
+  incoming.forEach((raw) => {
+    if (!raw || typeof raw !== 'object') return;
+    const accountId = normalizeAccountId(raw.accountId || raw.email);
+    const emailLower = normalizeAccountId(raw.email || accountId);
+    if (!accountId || !emailLower.includes('@') || !raw.passwordHash || !raw.salt) return;
+
+    const existing = credEnv.credentials[accountId];
+    const incomingTime = Date.parse(raw.updatedAt || '') || 0;
+    const existingTime = existing ? Date.parse(existing.updatedAt || '') || 0 : -1;
+
+    if (!existing || incomingTime > existingTime) {
+      const cleanUsername = normalizeUsername(raw.username || '');
+      if (cleanUsername) {
+        const usernameTaken = Object.values(credEnv.credentials).some(
+          (c) => c.username === cleanUsername && c.accountId !== accountId
+        );
+        if (usernameTaken) return;
+      }
+      const validRole: AccountRole = VALID_ROLES.includes(raw.role)
+        ? raw.role
+        : 'Guru Mapel';
+      credEnv.credentials[accountId] = {
+        accountId,
+        username: cleanUsername,
+        email: emailLower,
+        name: String(raw.name || emailLower).trim().slice(0, 160),
+        role: accountId === BOOTSTRAP_ADMIN_EMAIL ? 'Admin' : validRole,
+        nip: String(raw.nip || '').trim().slice(0, 64),
+        status:
+          accountId === BOOTSTRAP_ADMIN_EMAIL
+            ? 'Aktif'
+            : raw.status === 'Nonaktif'
+              ? 'Nonaktif'
+              : 'Aktif',
+        passwordHash: String(raw.passwordHash).slice(0, 256),
+        salt: String(raw.salt).slice(0, 128),
+        updatedAt: raw.updatedAt || new Date().toISOString(),
+      };
+      changed = true;
+    }
+  });
+
+  if (changed) {
+    writeJsonFileAtomic(CREDENTIALS_FILE, credEnv);
+  }
+
+  return exportCredentialRecords();
+}
+
 export function upsertAccountCredential(input: {
   accountId: string;
   previousId?: string;
@@ -292,7 +372,9 @@ export function upsertAccountCredential(input: {
   status: 'Aktif' | 'Nonaktif';
   signatureImage?: string;
   schoolStampImage?: string;
-}): { ok: true; meta: CredentialMeta } | { ok: false; statusCode: number; error: string } {
+}):
+  | { ok: true; meta: CredentialMeta; record: StoredCredential }
+  | { ok: false; statusCode: number; error: string } {
   const accountId = normalizeAccountId(input.accountId || input.email);
   const emailLower = normalizeAccountId(input.email || accountId);
   const previousId = input.previousId
@@ -428,6 +510,7 @@ export function upsertAccountCredential(input: {
       username: record.username,
       hasPassword: Boolean(record.passwordHash && record.salt),
     },
+    record,
   };
 }
 

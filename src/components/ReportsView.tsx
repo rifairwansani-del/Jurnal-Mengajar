@@ -3,6 +3,7 @@ import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import {
+  BarChart3,
   CheckCircle2,
   ChevronDown,
   FileDown,
@@ -23,6 +24,7 @@ import {
   PaperSizeId,
   PortalDatabase,
   PrintFontFamily,
+  ReportChartId,
   ReportSectionId,
   SignatureLayoutPreset,
   SignaturePositionSettings,
@@ -30,19 +32,28 @@ import {
 } from '../types';
 import {
   PAPER_SIZE_CONFIG,
+  drawPdfKopSurat,
   exportPreviewDomToWordDoc,
   resolveActiveSigner,
   resolvePrincipalStampImage,
 } from '../utils/exportHelpers';
 import {
+  compareClassNames,
+  compareStudentsByClassAndAbsent,
+  DEFAULT_KOP_LINE_SPACING,
   formatCompactDateId,
   formatLongDateId,
   formatShortDateId,
+  getPrintFontCss,
   getTodayISO,
   imageUrlToPngDataUrl,
+  KOP_LINE_KEYS,
   makeGradeId,
+  normalizeKopLineSpacing,
+  resolveKopLineStyle,
   summarizeJournalRow,
 } from '../utils/portalHelpers';
+import { buildReportCharts, REPORT_CHART_OPTIONS } from '../utils/reportCharts';
 
 type ReportCategory = 'Mengajar' | 'Presensi' | 'Akademik' | 'Kesiswaan' | 'Pimpinan';
 
@@ -116,6 +127,13 @@ const REPORT_TYPE_OPTIONS: {
     description: 'Ringkasan & riwayat kinerja guru',
     officialTitle: 'LAPORAN AKTIVITAS & PENILAIAN KINERJA GURU',
   },
+  {
+    id: 'charts',
+    label: 'Laporan Grafis & Diagram',
+    category: 'Pimpinan',
+    description: 'Diagram batang, garis, donat, lingkaran & batang horizontal',
+    officialTitle: 'LAPORAN ANALISIS GRAFIS & DIAGRAM KBM',
+  },
 ];
 
 const CATEGORY_BADGE_CLASS: Record<ReportCategory, string> = {
@@ -164,8 +182,10 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
 
   const classOptions = useMemo(() => {
     const set = new Set(settings.masterClasses);
-    students.forEach((s) => set.add(s.className));
-    return Array.from(set);
+    students.forEach((s) => {
+      if (s.className) set.add(s.className);
+    });
+    return Array.from(set).sort(compareClassNames);
   }, [settings.masterClasses, students]);
 
   const savedPrefs = settings.reportPrintPreferences;
@@ -176,9 +196,14 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       ? savedPrefs.selectedReportTypes
       : ['journal']
   );
+  const [selectedChartTypes, setSelectedChartTypes] = useState<ReportChartId[]>(() =>
+    savedPrefs?.selectedChartTypes && savedPrefs.selectedChartTypes.length > 0
+      ? savedPrefs.selectedChartTypes
+      : REPORT_CHART_OPTIONS.map((c) => c.id)
+  );
   const [selectedClasses, setSelectedClasses] = useState<string[]>(() =>
     savedPrefs?.selectedClasses && savedPrefs.selectedClasses.length > 0
-      ? savedPrefs.selectedClasses
+      ? [...savedPrefs.selectedClasses].sort(compareClassNames)
       : classOptions
   );
   const [subjectFilter, setSubjectFilter] = useState<string>(
@@ -223,8 +248,125 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   const [kopRightSize, setKopRightSize] = useState<number>(() =>
     Math.max(28, Math.min(150, settings.kopSurat.logoRightSize ?? 72))
   );
+  const [kopLineSpacing, setKopLineSpacing] = useState<number>(() =>
+    normalizeKopLineSpacing(settings.kopSurat.lineSpacing)
+  );
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [isExportingWord, setIsExportingWord] = useState(false);
+
+  const prevSettingsRef = useRef(settings);
+  const prevClassOptionsRef = useRef<string[]>(classOptions);
+
+  useEffect(() => {
+    const prevClassOptions = prevClassOptionsRef.current;
+    if (prevClassOptions === classOptions) return;
+    prevClassOptionsRef.current = classOptions;
+    if (!settings.reportPrintPreferences.selectedClasses?.length) {
+      const wasAllSelected =
+        selectedClasses.length === prevClassOptions.length &&
+        selectedClasses.every((c, i) => c === prevClassOptions[i]);
+      if (wasAllSelected) {
+        setSelectedClasses(classOptions);
+      }
+    }
+  }, [classOptions, selectedClasses, settings.reportPrintPreferences.selectedClasses]);
+
+  useEffect(() => {
+    const prev = prevSettingsRef.current;
+    if (prev === settings) return;
+
+    const prevPrefs = prev.reportPrintPreferences;
+    const nextPrefs = settings.reportPrintPreferences;
+    const savedChartsPrev =
+      prevPrefs.selectedChartTypes && prevPrefs.selectedChartTypes.length > 0
+        ? prevPrefs.selectedChartTypes
+        : REPORT_CHART_OPTIONS.map((c) => c.id);
+    const savedClassesPrev =
+      prevPrefs.selectedClasses && prevPrefs.selectedClasses.length > 0
+        ? [...prevPrefs.selectedClasses].sort(compareClassNames)
+        : classOptions;
+
+    if (
+      selectedReportTypes.length === prevPrefs.selectedReportTypes.length &&
+      selectedReportTypes.every((r, i) => r === prevPrefs.selectedReportTypes[i])
+    ) {
+      setSelectedReportTypes(
+        nextPrefs.selectedReportTypes.length > 0 ? nextPrefs.selectedReportTypes : ['journal']
+      );
+    }
+    if (
+      selectedChartTypes.length === savedChartsPrev.length &&
+      selectedChartTypes.every((c, i) => c === savedChartsPrev[i])
+    ) {
+      setSelectedChartTypes(
+        nextPrefs.selectedChartTypes && nextPrefs.selectedChartTypes.length > 0
+          ? nextPrefs.selectedChartTypes
+          : REPORT_CHART_OPTIONS.map((c) => c.id)
+      );
+    }
+    if (
+      selectedClasses.length === savedClassesPrev.length &&
+      selectedClasses.every((c, i) => c === savedClassesPrev[i])
+    ) {
+      setSelectedClasses(
+        nextPrefs.selectedClasses && nextPrefs.selectedClasses.length > 0
+          ? [...nextPrefs.selectedClasses].sort(compareClassNames)
+          : classOptions
+      );
+    }
+    if (subjectFilter === prevPrefs.subjectFilter) setSubjectFilter(nextPrefs.subjectFilter);
+    if (startDate === prevPrefs.startDate) setStartDate(nextPrefs.startDate);
+    if (endDate === prevPrefs.endDate) setEndDate(nextPrefs.endDate);
+    if (signerAccountId === prevPrefs.signerAccountId) setSignerAccountId(nextPrefs.signerAccountId);
+    if (showKop === prevPrefs.showKop) setShowKop(nextPrefs.showKop);
+    if (showTtdKepsek === prevPrefs.showTtdKepsek) setShowTtdKepsek(nextPrefs.showTtdKepsek);
+    if (showTtdGuru === prevPrefs.showTtdGuru) setShowTtdGuru(nextPrefs.showTtdGuru);
+    if (showSignatureImage === prevPrefs.showSignatureImage) {
+      setShowSignatureImage(nextPrefs.showSignatureImage);
+    }
+    if (orientation === prevPrefs.orientation) setOrientation(nextPrefs.orientation);
+    if (paperSize === prevPrefs.paperSize) setPaperSize(nextPrefs.paperSize);
+    if (fontFamily === prevPrefs.fontFamily) setFontFamily(nextPrefs.fontFamily);
+    if (JSON.stringify(sigPos) === JSON.stringify(prev.signaturePosition)) {
+      setSigPos(settings.signaturePosition);
+    }
+
+    const prevLeft = Math.max(28, Math.min(150, prev.kopSurat.logoLeftSize ?? 72));
+    const prevRight = Math.max(28, Math.min(150, prev.kopSurat.logoRightSize ?? 72));
+    const prevSpacing = normalizeKopLineSpacing(prev.kopSurat.lineSpacing);
+    if (kopLeftSize === prevLeft) {
+      setKopLeftSize(Math.max(28, Math.min(150, settings.kopSurat.logoLeftSize ?? 72)));
+    }
+    if (kopRightSize === prevRight) {
+      setKopRightSize(Math.max(28, Math.min(150, settings.kopSurat.logoRightSize ?? 72)));
+    }
+    if (kopLineSpacing === prevSpacing) {
+      setKopLineSpacing(normalizeKopLineSpacing(settings.kopSurat.lineSpacing));
+    }
+
+    prevSettingsRef.current = settings;
+  }, [
+    settings,
+    classOptions,
+    selectedReportTypes,
+    selectedChartTypes,
+    selectedClasses,
+    subjectFilter,
+    startDate,
+    endDate,
+    signerAccountId,
+    showKop,
+    showTtdKepsek,
+    showTtdGuru,
+    showSignatureImage,
+    orientation,
+    paperSize,
+    fontFamily,
+    sigPos,
+    kopLeftSize,
+    kopRightSize,
+    kopLineSpacing,
+  ]);
 
   // Interactive drag & resize state for signature blocks, signature images, and stamp
   type SigInteraction =
@@ -273,11 +415,23 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     const reportTypesChanged =
       selectedReportTypes.length !== prefs.selectedReportTypes.length ||
       selectedReportTypes.some((r, i) => r !== prefs.selectedReportTypes[i]);
+    const savedCharts =
+      prefs.selectedChartTypes && prefs.selectedChartTypes.length > 0
+        ? prefs.selectedChartTypes
+        : REPORT_CHART_OPTIONS.map((c) => c.id);
+    const chartTypesChanged =
+      selectedChartTypes.length !== savedCharts.length ||
+      selectedChartTypes.some((c, i) => c !== savedCharts[i]);
+    const savedClasses =
+      prefs.selectedClasses && prefs.selectedClasses.length > 0
+        ? [...prefs.selectedClasses].sort(compareClassNames)
+        : classOptions;
     const classesChanged =
-      selectedClasses.length !== prefs.selectedClasses.length ||
-      selectedClasses.some((c, i) => c !== prefs.selectedClasses[i]);
+      selectedClasses.length !== savedClasses.length ||
+      selectedClasses.some((c, i) => c !== savedClasses[i]);
     const prefsChanged =
       reportTypesChanged ||
+      chartTypesChanged ||
       classesChanged ||
       subjectFilter !== prefs.subjectFilter ||
       startDate !== prefs.startDate ||
@@ -311,14 +465,21 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       (sigPos.stampOffsetY ?? 0) !== (savedSig.stampOffsetY ?? 0);
     const savedKopLeft = Math.max(28, Math.min(150, settings.kopSurat.logoLeftSize ?? 72));
     const savedKopRight = Math.max(28, Math.min(150, settings.kopSurat.logoRightSize ?? 72));
-    const kopLogoChanged = kopLeftSize !== savedKopLeft || kopRightSize !== savedKopRight;
-    return prefsChanged || sigChanged || kopLogoChanged;
+    const savedKopLineSpacing = normalizeKopLineSpacing(settings.kopSurat.lineSpacing);
+    const kopChanged =
+      kopLeftSize !== savedKopLeft ||
+      kopRightSize !== savedKopRight ||
+      kopLineSpacing !== savedKopLineSpacing;
+    return prefsChanged || sigChanged || kopChanged;
   }, [
     settings.reportPrintPreferences,
     settings.signaturePosition,
     settings.kopSurat.logoLeftSize,
     settings.kopSurat.logoRightSize,
+    settings.kopSurat.lineSpacing,
+    classOptions,
     selectedReportTypes,
+    selectedChartTypes,
     selectedClasses,
     subjectFilter,
     startDate,
@@ -334,22 +495,26 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     sigPos,
     kopLeftSize,
     kopRightSize,
+    kopLineSpacing,
   ]);
 
   const handleSavePrintSettings = () => {
     const safeLeftSize = Math.max(28, Math.min(150, kopLeftSize));
     const safeRightSize = Math.max(28, Math.min(150, kopRightSize));
+    const safeLineSpacing = normalizeKopLineSpacing(kopLineSpacing);
     onUpdateSettings((prev) => ({
       ...prev,
       kopSurat: {
         ...prev.kopSurat,
         logoLeftSize: safeLeftSize,
         logoRightSize: safeRightSize,
+        lineSpacing: safeLineSpacing,
       },
       signaturePosition: sigPos,
       reportPrintPreferences: {
         ...prev.reportPrintPreferences,
         selectedReportTypes,
+        selectedChartTypes,
         selectedClasses,
         subjectFilter,
         startDate,
@@ -372,6 +537,11 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     setSelectedReportTypes(
       prefs.selectedReportTypes.length > 0 ? prefs.selectedReportTypes : ['journal']
     );
+    setSelectedChartTypes(
+      prefs.selectedChartTypes && prefs.selectedChartTypes.length > 0
+        ? prefs.selectedChartTypes
+        : REPORT_CHART_OPTIONS.map((c) => c.id)
+    );
     setSelectedClasses(prefs.selectedClasses.length > 0 ? prefs.selectedClasses : classOptions);
     setSubjectFilter(prefs.subjectFilter);
     setStartDate(prefs.startDate);
@@ -387,6 +557,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     setSigPos(settings.signaturePosition);
     setKopLeftSize(Math.max(28, Math.min(150, settings.kopSurat.logoLeftSize ?? 72)));
     setKopRightSize(Math.max(28, Math.min(150, settings.kopSurat.logoRightSize ?? 72)));
+    setKopLineSpacing(normalizeKopLineSpacing(settings.kopSurat.lineSpacing));
     onToast('info', 'Pengaturan cetak dikembalikan ke versi tersimpan.');
   };
 
@@ -416,10 +587,12 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   const handlePresetChange = (preset: SignatureLayoutPreset) => {
     if (preset === 'bebas') {
       updateSigPos({ preset: 'bebas' });
+      onToast('info', 'Mode posisi bebas tanda tangan diaktifkan.');
       return;
     }
     const coords = getPresetCoords(preset);
     updateSigPos({ preset, ...coords });
+    onToast('info', `Tata letak tanda tangan diatur ke preset "${preset}".`);
   };
 
   useEffect(() => {
@@ -621,6 +794,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     if (preset === 'reset') {
       setStartDate('');
       setEndDate('');
+      onToast('info', 'Filter rentang tanggal laporan direset.');
       return;
     }
     const now = new Date();
@@ -631,17 +805,19 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       const last = new Date(year, month + 1, 0);
       setStartDate(first.toISOString().slice(0, 10));
       setEndDate(last.toISOString().slice(0, 10));
+      onToast('info', 'Periode laporan diatur ke Bulan Ini.');
     } else {
       const first = new Date(year, month - 1, 1);
       const last = new Date(year, month, 0);
       setStartDate(first.toISOString().slice(0, 10));
       setEndDate(last.toISOString().slice(0, 10));
+      onToast('info', 'Periode laporan diatur ke Bulan Lalu.');
     }
   };
 
   const toggleClassSelection = (cls: string) => {
     setSelectedClasses((prev) =>
-      prev.includes(cls) ? prev.filter((c) => c !== cls) : [...prev, cls]
+      (prev.includes(cls) ? prev.filter((c) => c !== cls) : [...prev, cls]).sort(compareClassNames)
     );
   };
 
@@ -654,6 +830,18 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
         nextSet.add(id);
       }
       return REPORT_TYPE_OPTIONS.map((o) => o.id).filter((optId) => nextSet.has(optId));
+    });
+  };
+
+  const toggleChartTypeSelection = (id: ReportChartId) => {
+    setSelectedChartTypes((prev) => {
+      const nextSet = new Set(prev);
+      if (nextSet.has(id)) {
+        nextSet.delete(id);
+      } else {
+        nextSet.add(id);
+      }
+      return REPORT_CHART_OPTIONS.map((o) => o.id).filter((optId) => nextSet.has(optId));
     });
   };
 
@@ -671,7 +859,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
         return true;
       })
       .sort((a, b) =>
-        a.date > b.date ? 1 : a.date < b.date ? -1 : a.className.localeCompare(b.className)
+        a.date > b.date ? 1 : a.date < b.date ? -1 : compareClassNames(a.className, b.className)
       );
   }, [
     journals,
@@ -691,7 +879,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   const getAttendanceBlockForClass = (cls: string) => {
     const classStudents = students
       .filter((s) => s.className === cls)
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort(compareStudentsByClassAndAbsent);
     const classJournals = filteredJournals.filter((j) => j.className === cls);
     return { classStudents, classJournals };
   };
@@ -699,7 +887,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   const getGradeBlockForClassAndSubject = (cls: string, subj: string) => {
     const classStudents = students
       .filter((s) => s.className === cls)
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort(compareStudentsByClassAndAbsent);
     const rows = classStudents.map((st, idx) => {
       const scores: Record<string, number | null> = {};
       const nums: number[] = [];
@@ -896,7 +1084,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   const getCombinedLegerForClass = (cls: string) => {
     const classStudents = students
       .filter((s) => s.className === cls)
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort(compareStudentsByClassAndAbsent);
 
     const subjectsWithData = settings.masterSubjects.filter((subj) =>
       grades.some(
@@ -965,12 +1153,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     const clsSet = new Set(selectedClasses);
     return students
       .filter((s) => clsSet.has(s.className))
-      .sort(
-        (a, b) =>
-          a.className.localeCompare(b.className) ||
-          (Number(a.absentNo) || 999) - (Number(b.absentNo) || 999) ||
-          a.name.localeCompare(b.name)
-      );
+      .sort(compareStudentsByClassAndAbsent);
   }, [students, selectedClasses]);
 
   // 9. Aktivitas & Penilaian Guru (Pimpinan)
@@ -1130,6 +1313,34 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   const periodSubtitle = `Tahun Ajaran ${session.academicYear} · Semester ${session.semester} · Mata Pelajaran: ${
     subjectFilter === 'ALL' ? 'Semua Mata Pelajaran' : subjectFilter
   }`;
+
+  const includeCharts = selectedReportTypes.includes('charts');
+
+  const chartCards = useMemo(() => {
+    if (!includeCharts) return [];
+    return buildReportCharts({
+      selectedChartTypes,
+      selectedClasses,
+      subjectFilter,
+      students,
+      journals: filteredJournals,
+      grades,
+      academicYear: session.academicYear,
+      semester: session.semester,
+      fontFamily,
+    });
+  }, [
+    includeCharts,
+    selectedChartTypes,
+    selectedClasses,
+    subjectFilter,
+    students,
+    filteredJournals,
+    grades,
+    session.academicYear,
+    session.semester,
+    fontFamily,
+  ]);
 
   const dateRangeLabel =
     startDate || endDate
@@ -1442,6 +1653,19 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([header, ...body]), 'Kinerja Guru');
     }
 
+    if (has('charts')) {
+      const header = ['Jenis Grafik', 'Kategori / Label', 'Nilai Utama', 'Keterangan'];
+      const body =
+        chartCards.length === 0
+          ? [['Grafis', 'Belum ada jenis diagram dipilih', '-', '-']]
+          : chartCards.flatMap((c) => c.summaryRows);
+      XLSX.utils.book_append_sheet(
+        wb,
+        XLSX.utils.aoa_to_sheet([header, ...body]),
+        'Ringkasan Grafis'
+      );
+    }
+
     if (wb.SheetNames.length === 0) {
       const ws = XLSX.utils.aoa_to_sheet([['Tidak ada data untuk filter terpilih']]);
       XLSX.utils.book_append_sheet(wb, ws, 'Laporan');
@@ -1519,8 +1743,8 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
 
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
-      const marginX = 14;
-      let cursorY = 14;
+      const marginX = 12;
+      let cursorY = 12;
 
       const [leftLogoPng, rightLogoPng, kepsekSigPng, guruSigPng, stampPng] =
         await Promise.all([
@@ -1537,95 +1761,61 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             : Promise.resolve(null),
         ]);
 
-      const drawKopSurat = () => {
-        if (!showKop) return;
-        const clampedLeftPx = Math.max(28, Math.min(150, kopLeftSize));
-        const clampedRightPx = Math.max(28, Math.min(150, kopRightSize));
-        const logoLeftMm = Math.round(clampedLeftPx * 0.264583 * 10) / 10;
-        const logoRightMm = Math.round(clampedRightPx * 0.264583 * 10) / 10;
-        const contactLines = [
-          settings.kopSurat.line4,
-          settings.kopSurat.line5,
-          settings.kopSurat.line6,
-        ].filter(Boolean);
-        const textHeightMm = 19 + Math.max(1, contactLines.length) * 3.8;
-        const kopHeightMm = Math.max(
-          textHeightMm,
-          leftLogoPng ? logoLeftMm : 0,
-          rightLogoPng ? logoRightMm : 0
-        );
-        const textStartY = cursorY + Math.max(0, (kopHeightMm - textHeightMm) / 2);
-
-        if (leftLogoPng) {
-          doc.addImage(
-            leftLogoPng,
-            'PNG',
-            marginX,
-            cursorY + Math.max(0, (kopHeightMm - logoLeftMm) / 2),
-            logoLeftMm,
-            logoLeftMm
-          );
-        }
-        if (rightLogoPng) {
-          doc.addImage(
-            rightLogoPng,
-            'PNG',
-            pageWidth - marginX - logoRightMm,
-            cursorY + Math.max(0, (kopHeightMm - logoRightMm) / 2),
-            logoRightMm,
-            logoRightMm
-          );
-        }
-
-        const centerX = pageWidth / 2;
-        doc.setFont(pdfFont, 'normal');
-        doc.setFontSize(10);
-        if (settings.kopSurat.line1) {
-          doc.text(settings.kopSurat.line1, centerX, textStartY + 4, { align: 'center' });
-        }
-        if (settings.kopSurat.line2) {
-          doc.setFont(pdfFont, 'bold');
-          doc.setFontSize(11);
-          doc.text(settings.kopSurat.line2, centerX, textStartY + 9, { align: 'center' });
-        }
-        if (settings.kopSurat.line3) {
-          doc.setFont(pdfFont, 'bold');
-          doc.setFontSize(13);
-          doc.text(settings.kopSurat.line3, centerX, textStartY + 14.5, { align: 'center' });
-        }
-        doc.setFont(pdfFont, 'normal');
-        doc.setFontSize(8.5);
-        contactLines.forEach((line, idx) => {
-          doc.text(line, centerX, textStartY + 19 + idx * 3.8, { align: 'center' });
+      if (showKop) {
+        cursorY = drawPdfKopSurat({
+          doc,
+          kop: {
+            ...settings.kopSurat,
+            logoLeftSize: kopLeftSize,
+            logoRightSize: kopRightSize,
+            lineSpacing: kopLineSpacing,
+          },
+          leftLogoPng,
+          rightLogoPng,
+          logoLeftPx: kopLeftSize,
+          logoRightPx: kopRightSize,
+          marginX,
+          startY: cursorY,
+          fallbackFont: pdfFont,
         });
+      }
 
-        const lineY = cursorY + kopHeightMm + 1.5;
-        doc.setLineWidth(0.8);
-        doc.line(marginX, lineY, pageWidth - marginX, lineY);
-        doc.setLineWidth(0.25);
-        doc.line(marginX, lineY + 1, pageWidth - marginX, lineY + 1);
-        cursorY = lineY + 7;
-      };
-
-      drawKopSurat();
-
-      // Title
+      // Title (matching Preview 12pt bold uppercase + underline)
+      const usableWidth = pageWidth - marginX * 2;
+      const centerX = pageWidth / 2;
       doc.setFont(pdfFont, 'bold');
       doc.setFontSize(12);
-      doc.text(reportTitle, pageWidth / 2, cursorY, { align: 'center' });
-      cursorY += 5;
+      const wrappedTitle = doc.splitTextToSize(reportTitle.toUpperCase(), usableWidth) as string[];
+      wrappedTitle.forEach((line) => {
+        doc.text(line, centerX, cursorY, { align: 'center' });
+        const lineW = doc.getTextWidth(line);
+        doc.setLineWidth(0.35);
+        doc.line(centerX - lineW / 2, cursorY + 1, centerX + lineW / 2, cursorY + 1);
+        cursorY += 5;
+      });
 
       doc.setFont(pdfFont, 'normal');
       doc.setFontSize(9);
-      doc.text(`${periodSubtitle} · Rentang Tanggal: ${dateRangeLabel}`, pageWidth / 2, cursorY, {
+      doc.setTextColor(51, 65, 85);
+      doc.text(`${periodSubtitle} · Rentang Tanggal: ${dateRangeLabel}`, centerX, cursorY, {
         align: 'center',
       });
-      cursorY += 7;
+      doc.setTextColor(0, 0, 0);
+      cursorY += 6;
 
       const commonTableStyles = {
         font: pdfFont,
         fontSize: 8,
-        cellPadding: 2,
+        textColor: 0 as const,
+        cellPadding: 1.4,
+        lineColor: [0, 0, 0] as [number, number, number],
+        lineWidth: 0.2,
+      };
+
+      const commonHeadStyles = {
+        fillColor: [241, 245, 249] as [number, number, number],
+        textColor: 0 as const,
+        fontStyle: 'bold' as const,
         lineColor: [0, 0, 0] as [number, number, number],
         lineWidth: 0.2,
       };
@@ -1633,7 +1823,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       const ensureSpace = (minMm = 36) => {
         if (cursorY > pageHeight - minMm) {
           doc.addPage();
-          cursorY = 16;
+          cursorY = 14;
         }
       };
 
@@ -1641,8 +1831,9 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
         ensureSpace(36);
         doc.setFont(pdfFont, 'bold');
         doc.setFontSize(10);
+        doc.setTextColor(0, 0, 0);
         doc.text(label, marginX, cursorY);
-        cursorY += 3;
+        cursorY += 2.6;
       };
 
       const has = (id: ReportSectionId) => selectedReportTypes.includes(id);
@@ -1655,7 +1846,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           startY: cursorY,
           margin: { left: marginX, right: marginX },
           styles: commonTableStyles,
-          headStyles: { fillColor: [241, 245, 249], textColor: 0, fontStyle: 'bold' },
+          headStyles: commonHeadStyles,
           head: [
             [
               'No',
@@ -1697,7 +1888,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             startY: cursorY,
             margin: { left: marginX, right: marginX },
             styles: { ...commonTableStyles, fontSize: 7.5 },
-            headStyles: { fillColor: [241, 245, 249], textColor: 0, fontStyle: 'bold' },
+            headStyles: commonHeadStyles,
             head: [
               [
                 'No',
@@ -1759,7 +1950,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             startY: cursorY,
             margin: { left: marginX, right: marginX },
             styles: commonTableStyles,
-            headStyles: { fillColor: [241, 245, 249], textColor: 0, fontStyle: 'bold' },
+            headStyles: commonHeadStyles,
             head: [
               [
                 'No',
@@ -1806,7 +1997,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           startY: cursorY,
           margin: { left: marginX, right: marginX },
           styles: commonTableStyles,
-          headStyles: { fillColor: [241, 245, 249], textColor: 0, fontStyle: 'bold' },
+          headStyles: commonHeadStyles,
           head: [['No', 'NIS', 'Nama Siswa', 'Kelas', 'S', 'I', 'A', 'D', 'Total', 'Pembinaan']],
           body:
             monitoringAbsenceData.summary.length === 0
@@ -1832,7 +2023,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           startY: cursorY,
           margin: { left: marginX, right: marginX },
           styles: commonTableStyles,
-          headStyles: { fillColor: [241, 245, 249], textColor: 0, fontStyle: 'bold' },
+          headStyles: commonHeadStyles,
           head: [['No', 'Tanggal', 'Jam', 'Kelas', 'Mapel', 'Nama Siswa', 'Status', 'Keterangan']],
           body:
             monitoringAbsenceData.chronology.length === 0
@@ -1864,7 +2055,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
               startY: cursorY,
               margin: { left: marginX, right: marginX },
               styles: commonTableStyles,
-              headStyles: { fillColor: [241, 245, 249], textColor: 0, fontStyle: 'bold' },
+              headStyles: commonHeadStyles,
               head: [['No', 'NIS', 'Nama Siswa', ...settings.masterExamTypes, 'Rata-rata', 'Status']],
               body: rows.map((r) => [
                 r.no,
@@ -1896,7 +2087,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
               startY: cursorY,
               margin: { left: marginX, right: marginX },
               styles: commonTableStyles,
-              headStyles: { fillColor: [241, 245, 249], textColor: 0, fontStyle: 'bold' },
+              headStyles: commonHeadStyles,
               head: [
                 [
                   'No',
@@ -1939,7 +2130,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             startY: cursorY,
             margin: { left: marginX, right: marginX },
             styles: { ...commonTableStyles, fontSize: 7.5 },
-            headStyles: { fillColor: [241, 245, 249], textColor: 0, fontStyle: 'bold' },
+            headStyles: commonHeadStyles,
             head: [['Rank', 'NIS', 'Nama Siswa', ...subjects, 'Jumlah', 'Rata-rata', 'Status']],
             body:
               rows.length === 0
@@ -1967,7 +2158,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           startY: cursorY,
           margin: { left: marginX, right: marginX },
           styles: { ...commonTableStyles, fontSize: 7.5 },
-          headStyles: { fillColor: [241, 245, 249], textColor: 0, fontStyle: 'bold' },
+          headStyles: commonHeadStyles,
           head: [
             [
               'No',
@@ -2010,7 +2201,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           startY: cursorY,
           margin: { left: marginX, right: marginX },
           styles: commonTableStyles,
-          headStyles: { fillColor: [241, 245, 249], textColor: 0, fontStyle: 'bold' },
+          headStyles: commonHeadStyles,
           head: [
             [
               'No',
@@ -2046,7 +2237,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           startY: cursorY,
           margin: { left: marginX, right: marginX },
           styles: commonTableStyles,
-          headStyles: { fillColor: [241, 245, 249], textColor: 0, fontStyle: 'bold' },
+          headStyles: commonHeadStyles,
           head: [['No', 'Tanggal', 'Jam', 'Kelas', 'Mata Pelajaran', 'Materi Pokok', '% Hadir']],
           body:
             teacherActivityData.recentKbm.length === 0
@@ -2065,8 +2256,60 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
       }
 
+      if (has('charts')) {
+        drawSectionTitle('Laporan Grafis & Diagram Analisis KBM');
+        if (chartCards.length === 0) {
+          doc.setFont(pdfFont, 'normal');
+          doc.setFontSize(9);
+          doc.text('Belum ada jenis diagram grafik yang dipilih.', marginX, cursorY + 4);
+          cursorY += 10;
+        } else {
+          const cols = paperSize === 'A5' && orientation === 'portrait' ? 1 : 2;
+          const gapMm = 4;
+          const cardW = (usableWidth - gapMm * (cols - 1)) / cols;
+          const imgW = cardW - 5;
+
+          for (let i = 0; i < chartCards.length; i += cols) {
+            const rowCards = chartCards.slice(i, i + cols);
+            const imgH = imgW * (rowCards[0].heightPx / rowCards[0].widthPx);
+            const cardH = 12.5 + imgH;
+            ensureSpace(cardH + 4);
+
+            rowCards.forEach((card, cIdx) => {
+              const cardX = marginX + cIdx * (cardW + gapMm);
+              const cardY = cursorY;
+              doc.setDrawColor(0, 0, 0);
+              doc.setLineWidth(0.25);
+              doc.setFillColor(255, 255, 255);
+              doc.rect(cardX, cardY, cardW, cardH, 'FD');
+
+              doc.setFont(pdfFont, 'bold');
+              doc.setFontSize(8.5);
+              doc.setTextColor(0, 0, 0);
+              doc.text(card.title, cardX + 2.5, cardY + 4.5, { maxWidth: cardW - 5 });
+
+              doc.setFont(pdfFont, 'normal');
+              doc.setFontSize(7);
+              doc.setTextColor(71, 85, 105);
+              doc.text(`${card.chartKind} · ${card.subtitle}`, cardX + 2.5, cardY + 8.5, {
+                maxWidth: cardW - 5,
+              });
+              doc.setTextColor(0, 0, 0);
+
+              if (card.pngDataUrl) {
+                doc.addImage(card.pngDataUrl, 'PNG', cardX + 2.5, cardY + 10.2, imgW, imgH);
+              }
+            });
+
+            cursorY += cardH + 4.5;
+          }
+          cursorY += 3;
+        }
+      }
+
       // Signature Block matching Preview & sigPos 1:1
       if (showTtdKepsek || showTtdGuru) {
+        const PX_TO_MM = 0.264583;
         const kepsekSigPx = Math.max(
           16,
           Math.min(260, sigPos.principalSignatureSize ?? sigPos.signatureSize ?? 60)
@@ -2076,7 +2319,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           Math.min(260, sigPos.teacherSignatureSize ?? sigPos.signatureSize ?? 60)
         );
         const stampPx = Math.max(20, Math.min(260, sigPos.stampSize ?? 70));
-        const stampMm = Number((stampPx * 0.285).toFixed(2));
+        const stampMm = Number((stampPx * PX_TO_MM).toFixed(2));
         const kepsekSigOffsetX = sigPos.principalSigOffsetX ?? 0;
         const kepsekSigOffsetY = sigPos.principalSigOffsetY ?? 0;
         const guruSigOffsetX = sigPos.teacherSigOffsetX ?? 0;
@@ -2088,14 +2331,13 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           sigPos.preset === 'kiri' || sigPos.preset === 'kanan'
             ? 76
             : sigPos.preset === 'bebas'
-            ? Math.max(48, Math.max(sigPos.principalY, sigPos.teacherY) * 0.26 + 38)
+            ? Math.max(48, Math.max(sigPos.principalY, sigPos.teacherY) * PX_TO_MM + 38)
             : 48;
         if (cursorY > pageHeight - neededH) {
           doc.addPage();
-          cursorY = 18;
+          cursorY = 14;
         }
         const sigBaseY = cursorY + 4;
-        const usableWidth = pageWidth - marginX * 2;
         const maxSigX = pageWidth - marginX - 50;
 
         const drawPdfSigBlock = (
@@ -2111,15 +2353,16 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           sigOffsetX: number,
           sigOffsetY: number
         ) => {
-          const sigH = Number((sigPx * 0.265).toFixed(2));
+          const sigH = Number((sigPx * PX_TO_MM).toFixed(2));
           const sigW = Number((sigH * 2.38).toFixed(2));
           doc.setFont(pdfFont, 'normal');
           doc.setFontSize(9.5);
+          doc.setTextColor(0, 0, 0);
           doc.text(topLabel, xMm, yMm);
           doc.text(roleTitle, xMm, yMm + 4.5);
           if (withStamp && stampPng) {
-            const stampCenterX = xMm + 4.5 + stampOffsetX * 0.265;
-            const stampCenterY = yMm + 16 + stampOffsetY * 0.265;
+            const stampCenterX = xMm + 4.8 + stampOffsetX * PX_TO_MM;
+            const stampCenterY = yMm + 16 + stampOffsetY * PX_TO_MM;
             doc.addImage(
               stampPng,
               'PNG',
@@ -2133,14 +2376,17 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             doc.addImage(
               sigPng,
               'PNG',
-              xMm + sigOffsetX * 0.265,
-              yMm + 14.5 - sigH / 2 + sigOffsetY * 0.265,
+              xMm + sigOffsetX * PX_TO_MM,
+              yMm + 15 - sigH / 2 + sigOffsetY * PX_TO_MM,
               sigW,
               sigH
             );
           }
           doc.setFont(pdfFont, 'bold');
           doc.text(personName, xMm, yMm + 25.5);
+          const nameW = doc.getTextWidth(personName);
+          doc.setLineWidth(0.25);
+          doc.line(xMm, yMm + 26.2, xMm + nameW, yMm + 26.2);
           doc.setFont(pdfFont, 'normal');
           doc.text(`NIP. ${personNip || '-'}`, xMm, yMm + 30);
         };
@@ -2169,9 +2415,9 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           guruY = sigBaseY + 36;
         } else if (sigPos.preset === 'bebas') {
           kepsekX = Math.min(maxSigX, marginX + (usableWidth * sigPos.principalX) / 100);
-          kepsekY = sigBaseY + sigPos.principalY * 0.26;
+          kepsekY = sigBaseY + sigPos.principalY * PX_TO_MM;
           guruX = Math.min(maxSigX, marginX + (usableWidth * sigPos.teacherX) / 100);
-          guruY = sigBaseY + sigPos.teacherY * 0.26;
+          guruY = sigBaseY + sigPos.teacherY * PX_TO_MM;
         }
 
         if (showTtdKepsek) {
@@ -2221,6 +2467,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       onToast('error', 'Pilih minimal satu jenis laporan terlebih dahulu.');
       return;
     }
+    onToast('info', 'Membuka dialog cetak laporan resmi...');
     window.print();
   };
 
@@ -2233,6 +2480,11 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   const includeGradesLeger = selectedReportTypes.includes('grades_leger');
   const includeStudentsRoster = selectedReportTypes.includes('students_roster');
   const includeTeacherActivity = selectedReportTypes.includes('teacher_activity');
+
+  const activePaperCfg = PAPER_SIZE_CONFIG[paperSize];
+  const activePaperWidthMm =
+    orientation === 'landscape' ? activePaperCfg.heightMm : activePaperCfg.widthMm;
+  const chartCols = paperSize === 'A5' && orientation === 'portrait' ? 1 : 2;
 
   const principalStampImage = resolvePrincipalStampImage(db);
   const stampOnKepsek = sigPos.showStamp;
@@ -2273,14 +2525,14 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     const stampLeftCss =
       sigPos.preset === 'tengah'
         ? `calc(50% - ${23 + Math.round(stampSizePx / 2) - stampOffsetX}px)`
-        : `${19 - Math.round(stampSizePx / 2) + stampOffsetX}px`;
+        : `${18 - Math.round(stampSizePx / 2) + stampOffsetX}px`;
     const stampTopPx = Math.round((72 - stampSizePx) / 2) + stampOffsetY;
 
     return (
       <div
         style={{
-          fontSize: '11.5px',
-          lineHeight: 1.4,
+          fontSize: '9.5pt',
+          lineHeight: 1.35,
           textAlign: sigPos.preset === 'tengah' ? 'center' : 'left',
         }}
       >
@@ -2804,6 +3056,63 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           </div>
         </div>
 
+        {/* Chart Types Panel when Laporan Grafis & Diagram is selected */}
+        {includeCharts && (
+          <div className="rounded-xl border border-violet-200 bg-violet-50/70 p-3.5 space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <BarChart3 className="w-4 h-4 text-violet-700" />
+                <span className="text-xs font-bold text-violet-950">
+                  Pilihan Jenis Grafik &amp; Diagram Laporan ({selectedChartTypes.length}/{REPORT_CHART_OPTIONS.length})
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setSelectedChartTypes(REPORT_CHART_OPTIONS.map((c) => c.id))}
+                  className="font-semibold text-violet-700 hover:underline"
+                >
+                  Pilih Semua Diagram
+                </button>
+                <span className="text-violet-300">|</span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedChartTypes([])}
+                  className="text-slate-500 hover:text-slate-700"
+                >
+                  Kosongkan
+                </button>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
+              {REPORT_CHART_OPTIONS.map((opt) => {
+                const checked = selectedChartTypes.includes(opt.id);
+                return (
+                  <label
+                    key={opt.id}
+                    className={`flex items-start gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors ${
+                      checked
+                        ? 'bg-white border-violet-400 shadow-2xs'
+                        : 'bg-white/60 border-slate-200 hover:bg-white'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleChartTypeSelection(opt.id)}
+                      className="mt-0.5 rounded border-slate-300 text-violet-600 focus:ring-violet-600"
+                    />
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-slate-900 leading-tight">{opt.label}</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">{opt.description}</p>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Row 3: Pemilik Akun Pengesah + Posisi Blok Pengesahan Bebas + Stempel */}
         <div className="pt-3 border-t border-slate-100 space-y-3">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
@@ -2928,20 +3237,21 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
               <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
                     updateSigPos({
                       principalSignatureSize: 60,
                       teacherSignatureSize: 60,
                       stampSize: 70,
-                    })
-                  }
+                    });
+                    onToast('info', 'Ukuran gambar TTD & stempel dikembalikan ke standar.');
+                  }}
                   className="px-2.5 py-1 rounded-md bg-white border border-indigo-200 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
                 >
                   Reset Ukuran
                 </button>
                 <button
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
                     updateSigPos({
                       principalSigOffsetX: 0,
                       principalSigOffsetY: 0,
@@ -2949,23 +3259,25 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                       teacherSigOffsetY: 0,
                       stampOffsetX: 0,
                       stampOffsetY: 0,
-                    })
-                  }
+                    });
+                    onToast('info', 'Posisi offset gambar TTD & stempel direset.');
+                  }}
                   className="px-2.5 py-1 rounded-md bg-white border border-indigo-200 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
                 >
                   Reset Posisi Gambar
                 </button>
                 <button
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
                     updateSigPos({
                       preset: 'bebas',
                       principalX: 4,
                       principalY: 0,
                       teacherX: 62,
                       teacherY: 0,
-                    })
-                  }
+                    });
+                    onToast('info', 'Posisi blok tanda tangan direset ke standar.');
+                  }}
                   className="px-2.5 py-1 rounded-md bg-white border border-indigo-200 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
                 >
                   Reset Posisi Blok
@@ -3449,21 +3761,23 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-semibold text-slate-800">
-                  Ukuran Logo Kop Surat Dinas (Kiri &amp; Kanan)
+                  Ukuran Logo &amp; Spasi Baris Kop Surat Dinas
                 </span>
                 <button
                   type="button"
                   onClick={() => {
                     setKopLeftSize(72);
                     setKopRightSize(72);
+                    setKopLineSpacing(DEFAULT_KOP_LINE_SPACING);
+                    onToast('info', 'Ukuran logo (72px) & spasi baris kop surat (1.25x) dikembalikan ke standar.');
                   }}
                   className="px-2.5 py-1 rounded-md border border-slate-200 bg-white hover:bg-slate-100 text-[11px] font-semibold text-slate-600 inline-flex items-center gap-1"
                 >
                   <RotateCcw className="w-3 h-3" />
-                  Reset Logo (72px)
+                  Reset Logo &amp; Spasi
                 </button>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
                 <div className="bg-white rounded-lg border border-slate-200 p-2.5 space-y-1.5">
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-semibold text-slate-700 tabular-nums">
@@ -3561,6 +3875,61 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                     className="w-full accent-indigo-600"
                   />
                 </div>
+
+                <div className="bg-white rounded-lg border border-slate-200 p-2.5 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-700 tabular-nums">
+                      Spasi Baris Kop ({kopLineSpacing.toFixed(2)}x)
+                    </span>
+                    <div className="inline-flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setKopLineSpacing((v) => normalizeKopLineSpacing(v - 0.05))
+                        }
+                        aria-label="Rapatkan spasi baris kop surat"
+                        className="w-5 h-5 rounded border border-slate-200 bg-white hover:bg-slate-100 font-bold text-slate-700"
+                      >
+                        -
+                      </button>
+                      <input
+                        type="number"
+                        min={0.85}
+                        max={2.4}
+                        step={0.05}
+                        value={kopLineSpacing}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          if (!Number.isNaN(v)) {
+                            setKopLineSpacing(normalizeKopLineSpacing(v));
+                          }
+                        }}
+                        aria-label="Spasi antar baris kop surat"
+                        className="w-14 px-1 py-0.5 text-center border border-slate-200 rounded text-[11px] font-semibold tabular-nums"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setKopLineSpacing((v) => normalizeKopLineSpacing(v + 0.05))
+                        }
+                        aria-label="Renggangkan spasi baris kop surat"
+                        className="w-5 h-5 rounded border border-slate-200 bg-white hover:bg-slate-100 font-bold text-slate-700"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.85}
+                    max={2.4}
+                    step={0.05}
+                    value={kopLineSpacing}
+                    onChange={(e) => setKopLineSpacing(normalizeKopLineSpacing(e.target.value))}
+                    aria-label="Slider spasi baris kop surat"
+                    className="w-full accent-indigo-600"
+                  />
+                </div>
               </div>
             </div>
           )}
@@ -3604,24 +3973,23 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
         </div>
       </section>
 
-      {/* Real-Time Document Preview (Exact 1:1 source for Print & Word) */}
-      <section className="overflow-x-auto pb-4">
+      {/* Real-Time Document Preview (Exact 1:1 source for Print, PDF & Word) */}
+      <section className="overflow-x-auto pb-4 print:overflow-visible print:pb-0">
         <div
           ref={previewRef}
           style={{
+            width: `${activePaperWidthMm}mm`,
+            minWidth: `${activePaperWidthMm}mm`,
+            padding: '12mm',
             fontFamily: `"${fontFamily}", serif`,
             backgroundColor: '#ffffff',
             color: '#000000',
           }}
-          className={`print-area mx-auto bg-white border border-slate-200 shadow-sm p-6 sm:p-10 text-black ${
-            orientation === 'landscape'
-              ? `${PAPER_SIZE_CONFIG[paperSize].landscapeMinW} ${PAPER_SIZE_CONFIG[paperSize].landscapeMaxW}`
-              : PAPER_SIZE_CONFIG[paperSize].portraitMaxW
-          }`}
+          className="print-area mx-auto bg-white border border-slate-200 shadow-sm text-black print:!w-full print:!min-w-0 print:!p-0"
         >
           {/* KOP SURAT DINAS */}
           {showKop && (
-            <header style={{ borderBottom: '4px double #000', paddingBottom: '10px', marginBottom: '20px' }}>
+            <header style={{ borderBottom: '4px double #000', paddingBottom: '8px', marginBottom: '16px' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <tbody>
                   <tr>
@@ -3646,31 +4014,36 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                         />
                       )}
                     </td>
-                    <td style={{ textAlign: 'center', verticalAlign: 'middle', lineHeight: 1.25, border: 'none' }}>
-                      {settings.kopSurat.line1 && (
-                        <div style={{ fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
-                          {settings.kopSurat.line1}
-                        </div>
-                      )}
-                      {settings.kopSurat.line2 && (
-                        <div style={{ fontSize: '14px', fontWeight: 700, textTransform: 'uppercase' }}>
-                          {settings.kopSurat.line2}
-                        </div>
-                      )}
-                      {settings.kopSurat.line3 && (
-                        <div style={{ fontSize: '16px', fontWeight: 700, textTransform: 'uppercase', marginTop: '2px' }}>
-                          {settings.kopSurat.line3}
-                        </div>
-                      )}
-                      {settings.kopSurat.line4 && (
-                        <div style={{ fontSize: '11px', marginTop: '3px' }}>{settings.kopSurat.line4}</div>
-                      )}
-                      {settings.kopSurat.line5 && (
-                        <div style={{ fontSize: '11px' }}>{settings.kopSurat.line5}</div>
-                      )}
-                      {settings.kopSurat.line6 && (
-                        <div style={{ fontSize: '11px' }}>{settings.kopSurat.line6}</div>
-                      )}
+                    <td
+                      style={{
+                        fontFamily: getPrintFontCss(settings.kopSurat.fontFamily),
+                        verticalAlign: 'middle',
+                        lineHeight: kopLineSpacing,
+                        border: 'none',
+                      }}
+                    >
+                      {KOP_LINE_KEYS.map((key, idx) => {
+                        const text = settings.kopSurat[key];
+                        if (!text) return null;
+                        const s = resolveKopLineStyle(settings.kopSurat, key);
+                        return (
+                          <div
+                            key={key}
+                            style={{
+                              fontSize: `${s.fontSize}pt`,
+                              fontWeight: s.bold ? 700 : 400,
+                              fontStyle: s.italic ? 'italic' : 'normal',
+                              textDecoration: s.underline ? 'underline' : 'none',
+                              textAlign: s.align,
+                              ...(s.align === 'justify' ? { textAlignLast: 'justify' as const } : {}),
+                              ...(idx < 3 ? { textTransform: 'uppercase' as const } : {}),
+                              ...(key === 'line4' ? { marginTop: '3px' } : {}),
+                            }}
+                          >
+                            {text}
+                          </div>
+                        );
+                      })}
                     </td>
                     <td
                       style={{
@@ -3700,20 +4073,20 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           )}
 
           {/* Judul Dokumen */}
-          <div style={{ textAlign: 'center', marginBottom: '18px' }}>
+          <div style={{ textAlign: 'center', marginBottom: '14px' }}>
             <h2
               style={{
-                fontSize: '14px',
+                fontSize: '12pt',
                 fontWeight: 700,
                 textTransform: 'uppercase',
                 textDecoration: 'underline',
-                textUnderlineOffset: '4px',
+                textUnderlineOffset: '3px',
                 margin: 0,
               }}
             >
               {reportTitle}
             </h2>
-            <p style={{ fontSize: '11px', marginTop: '6px', color: '#334155' }}>
+            <p style={{ fontSize: '9pt', marginTop: '4px', marginBottom: 0, color: '#334155' }}>
               {periodSubtitle} · Rentang Tanggal: {dateRangeLabel}
             </p>
           </div>
@@ -3725,7 +4098,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                 padding: '24px',
                 textAlign: 'center',
                 color: '#475569',
-                fontSize: '12px',
+                fontSize: '10pt',
                 marginBottom: '20px',
               }}
             >
@@ -3735,13 +4108,13 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
 
           {/* 1. Jurnal Mengajar */}
           {includeJournal && (
-            <div style={{ marginBottom: '24px' }}>
+            <div style={{ marginBottom: '20px' }}>
               {selectedReportTypes.length > 1 && (
-                <h3 style={{ fontSize: '12px', fontWeight: 700, marginBottom: '6px' }}>
-                  A. Jurnal Kegiatan Mengajar
+                <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
+                  Jurnal Kegiatan Mengajar
                 </h3>
               )}
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
                 <thead>
                   <tr style={{ backgroundColor: '#f1f5f9' }}>
                     <th style={{ border: '1px solid #000', padding: '5px 6px', textAlign: 'center', width: '30px' }}>No</th>
@@ -3802,10 +4175,10 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                 const { classStudents, classJournals } = getAttendanceBlockForClass(cls);
                 return (
                   <div key={cls} style={{ marginBottom: '18px' }}>
-                    <h3 style={{ fontSize: '12px', fontWeight: 700, marginBottom: '6px' }}>
+                    <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
                       Leger Kehadiran Mendatar — Kelas {cls}
                     </h3>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '10.5px' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '7.5pt' }}>
                       <thead>
                         <tr style={{ backgroundColor: '#f1f5f9' }}>
                           <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', width: '28px' }}>No</th>
@@ -3882,10 +4255,10 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
 
                   return (
                     <div key={`${cls}-${subj}`} style={{ marginBottom: '18px' }}>
-                      <h3 style={{ fontSize: '12px', fontWeight: 700, marginBottom: '6px' }}>
+                      <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
                         Rekap Matriks Nilai — Kelas {cls} ({subj})
                       </h3>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
                         <thead>
                           <tr style={{ backgroundColor: '#f1f5f9' }}>
                             <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', width: '30px' }}>No</th>
@@ -3945,14 +4318,14 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                 return (
                   <div key={`monthly-${cls}`} style={{ marginBottom: '18px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px' }}>
-                      <h3 style={{ fontSize: '12px', fontWeight: 700, margin: 0 }}>
+                      <h3 style={{ fontSize: '10pt', fontWeight: 700, margin: 0 }}>
                         Rekap Presensi Bulanan — Kelas {cls}
                       </h3>
-                      <span style={{ fontSize: '10.5px', color: '#334155' }}>
+                      <span style={{ fontSize: '8pt', color: '#334155' }}>
                         Rata-rata Kehadiran Kelas: {classAvgPct !== null ? `${classAvgPct.toFixed(1)}%` : '-'}
                       </span>
                     </div>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '10.5px' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
                       <thead>
                         <tr style={{ backgroundColor: '#f1f5f9' }}>
                           <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', width: '28px' }}>No</th>
@@ -4017,10 +4390,10 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           {includeAttendanceMonitoring && (
             <div style={{ marginBottom: '24px' }}>
               <div style={{ marginBottom: '14px' }}>
-                <h3 style={{ fontSize: '12px', fontWeight: 700, marginBottom: '6px' }}>
+                <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
                   Monitoring S/I/A/D — Rekap Akumulasi Ketidakhadiran Siswa
                 </h3>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '10.5px' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
                   <thead>
                     <tr style={{ backgroundColor: '#f1f5f9' }}>
                       <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', width: '28px' }}>No</th>
@@ -4063,10 +4436,10 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
               </div>
 
               <div>
-                <h3 style={{ fontSize: '12px', fontWeight: 700, marginBottom: '6px' }}>
+                <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
                   Kronologi Ketidakhadiran (S/I/A/D)
                 </h3>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '10.5px' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
                   <thead>
                     <tr style={{ backgroundColor: '#f1f5f9' }}>
                       <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', width: '28px' }}>No</th>
@@ -4117,14 +4490,14 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                   return (
                     <div key={`rem-${cls}-${subj}`} style={{ marginBottom: '18px' }}>
                       <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'baseline', gap: '8px', marginBottom: '6px' }}>
-                        <h3 style={{ fontSize: '12px', fontWeight: 700, margin: 0 }}>
+                        <h3 style={{ fontSize: '10pt', fontWeight: 700, margin: 0 }}>
                           Ketuntasan & Remedial (&lt; KKM 75) — Kelas {cls} ({subj})
                         </h3>
-                        <span style={{ fontSize: '10.5px', color: '#334155' }}>
+                        <span style={{ fontSize: '8pt', color: '#334155' }}>
                           Daya Serap: <strong>{rem.dayaSerap !== null ? `${rem.dayaSerap.toFixed(0)}%` : '-'}</strong> · Tuntas: {rem.tuntasCount}/{rem.assessedCount} · Remedial: {rem.remedialCount} · Rata Kelas: {rem.classAvg !== null ? rem.classAvg.toFixed(1) : '-'}
                         </span>
                       </div>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '10.5px' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
                         <thead>
                           <tr style={{ backgroundColor: '#f1f5f9' }}>
                             <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', width: '28px' }}>No</th>
@@ -4182,10 +4555,10 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                 const { subjects, rows } = getCombinedLegerForClass(cls);
                 return (
                   <div key={`leger-${cls}`} style={{ marginBottom: '18px' }}>
-                    <h3 style={{ fontSize: '12px', fontWeight: 700, marginBottom: '6px' }}>
+                    <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
                       Leger Gabungan Nilai Lintas Mapel & Peringkat — Kelas {cls}
                     </h3>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '10.5px' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '7.5pt' }}>
                       <thead>
                         <tr style={{ backgroundColor: '#f1f5f9' }}>
                           <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', width: '42px' }}>Rank</th>
@@ -4242,10 +4615,10 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           {/* 8. Daftar Peserta Didik (Kesiswaan) */}
           {includeStudentsRoster && (
             <div style={{ marginBottom: '24px' }}>
-              <h3 style={{ fontSize: '12px', fontWeight: 700, marginBottom: '6px' }}>
+              <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
                 Daftar Induk Peserta Didik & Wali Kelas ({studentRosterRows.length} Siswa)
               </h3>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '10px' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '7.5pt' }}>
                 <thead>
                   <tr style={{ backgroundColor: '#f1f5f9' }}>
                     <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', width: '26px' }}>No</th>
@@ -4298,10 +4671,10 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           {includeTeacherActivity && (
             <div style={{ marginBottom: '24px' }}>
               <div style={{ marginBottom: '14px' }}>
-                <h3 style={{ fontSize: '12px', fontWeight: 700, marginBottom: '6px' }}>
+                <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
                   Ringkasan Aktivitas & Penilaian Kinerja Guru
                 </h3>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '10.5px' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
                   <thead>
                     <tr style={{ backgroundColor: '#f1f5f9' }}>
                       <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', width: '28px' }}>No</th>
@@ -4342,10 +4715,10 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
               </div>
 
               <div>
-                <h3 style={{ fontSize: '12px', fontWeight: 700, marginBottom: '6px' }}>
+                <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
                   Riwayat Kinerja & Pelaksanaan KBM Terbaru
                 </h3>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '10.5px' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
                   <thead>
                     <tr style={{ backgroundColor: '#f1f5f9' }}>
                       <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', width: '28px' }}>No</th>
@@ -4385,9 +4758,68 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             </div>
           )}
 
+          {/* 10. Laporan Grafis & Diagram (Pimpinan) */}
+          {includeCharts && (
+            <div style={{ marginBottom: '20px' }}>
+              <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '8px' }}>
+                Laporan Grafis &amp; Diagram Analisis KBM
+              </h3>
+              {chartCards.length === 0 ? (
+                <div
+                  style={{
+                    border: '1px dashed #94a3b8',
+                    padding: '16px',
+                    textAlign: 'center',
+                    fontSize: '9pt',
+                    color: '#64748b',
+                  }}
+                >
+                  Belum ada jenis diagram grafik yang dipilih pada panel filter di atas.
+                </div>
+              ) : (
+                <div
+                  data-chart-grid="true"
+                  data-chart-cols={chartCols}
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: `repeat(${chartCols}, minmax(0, 1fr))`,
+                    gap: '12px',
+                  }}
+                >
+                  {chartCards.map((card) => (
+                    <div
+                      key={card.id}
+                      data-chart-card="true"
+                      className="print-avoid-break"
+                      style={{
+                        border: '1px solid #000000',
+                        backgroundColor: '#ffffff',
+                        padding: '8px',
+                      }}
+                    >
+                      <div style={{ fontSize: '8.5pt', fontWeight: 700, color: '#000000', lineHeight: 1.25 }}>
+                        {card.title}
+                      </div>
+                      <div style={{ fontSize: '7pt', color: '#475569', marginTop: '2px', marginBottom: '6px' }}>
+                        {card.chartKind} · {card.subtitle}
+                      </div>
+                      {card.pngDataUrl && (
+                        <img
+                          src={card.pngDataUrl}
+                          alt={card.title}
+                          style={{ width: '100%', height: 'auto', display: 'block' }}
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Blok Pengesahan (Tanda Tangan + Stempel + Posisi Fleksibel & Seret Bebas) */}
           {(showTtdKepsek || showTtdGuru) && (
-            <div style={{ marginTop: '28px', paddingTop: '8px' }}>
+            <div className="print-avoid-break" style={{ marginTop: '24px', paddingTop: '8px' }}>
               {sigPos.preset === 'bebas' ? (
                 <div
                   ref={sigCanvasRef}
