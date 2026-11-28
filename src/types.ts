@@ -78,6 +78,8 @@ export interface ReportPrintPreferences {
   selectedReportTypes: ReportSectionId[];
   selectedChartTypes?: ReportChartId[];
   selectedClasses: string[];
+  selectedSubjects?: string[];
+  selectedTeacherId?: string;
   subjectFilter: string;
   startDate: string;
   endDate: string;
@@ -156,6 +158,8 @@ export interface Teacher {
   name: string;
   position: string;
   subject: string;
+  subjects?: string[];
+  subjectClasses?: Record<string, string[]>;
   email: string;
   phone: string;
   gender: 'L' | 'P';

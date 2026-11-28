@@ -13,7 +13,7 @@ import { SettingsView } from './components/SettingsView';
 import { StudentsView } from './components/StudentsView';
 import { TeachersView } from './components/TeachersView';
 import { usePortalStore } from './store/usePortalStore';
-import { JournalEntry, MenuId, TeachingSchedule } from './types';
+import { JournalEntry, MenuId, Teacher, TeachingSchedule } from './types';
 import { getTodayISO } from './utils/portalHelpers';
 
 export default function App() {
@@ -46,11 +46,13 @@ export default function App() {
     importTeachersBatch,
     deleteTeacher,
     deleteTeachersBatch,
+    syncTeachersFromAccounts,
     upsertAccount,
     importAccountsBatch,
     deleteAccount,
     deleteAccountsBatch,
     updateSettings,
+    setActivePeriod,
     restoreDatabase,
     resetAllData,
   } = usePortalStore();
@@ -67,6 +69,10 @@ export default function App() {
   const [draftJournal, setDraftJournal] = useState<{
     mode: 'edit' | 'duplicate';
     entry: JournalEntry;
+  } | null>(null);
+  const [draftTeacherPrint, setDraftTeacherPrint] = useState<{
+    teacherId: string;
+    nonce: number;
   } | null>(null);
 
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -169,6 +175,19 @@ export default function App() {
     setDraftJournal(null);
   }, []);
 
+  const handleOpenPrintForTeacher = useCallback(
+    (teacher: Teacher) => {
+      setDraftTeacherPrint({ teacherId: teacher.id, nonce: Date.now() });
+      setActiveMenu('reports');
+      showToast('info', `Pusat Laporan dibuka & disiapkan untuk ${teacher.name}.`);
+    },
+    [showToast]
+  );
+
+  const clearDraftTeacherPrint = useCallback(() => {
+    setDraftTeacherPrint(null);
+  }, []);
+
   return (
     <>
       {!db.session.isLoggedIn ? (
@@ -204,6 +223,10 @@ export default function App() {
           onSelectMenu={setActiveMenu}
           settings={db.settings}
           session={db.session}
+          onChangePeriod={(academicYear, semester) => {
+            setActivePeriod(academicYear, semester);
+            showToast('success', `Periode aktif diubah ke TA ${academicYear} (${semester}).`);
+          }}
           onLogout={() => {
             void logout().then(() => {
               showToast('info', 'Anda telah keluar dari sesi Portal E-Guru.');
@@ -278,6 +301,8 @@ export default function App() {
               onImportTeachersBatch={importTeachersBatch}
               onDeleteTeacher={deleteTeacher}
               onDeleteTeachersBatch={deleteTeachersBatch}
+              onSyncFromAccounts={syncTeachersFromAccounts}
+              onOpenPrintForTeacher={handleOpenPrintForTeacher}
               onToast={showToast}
               onConfirm={showConfirm}
             />
@@ -286,6 +311,8 @@ export default function App() {
           {activeMenu === 'reports' && (
             <ReportsView
               db={db}
+              draftTeacherPrint={draftTeacherPrint}
+              onClearDraftTeacherPrint={clearDraftTeacherPrint}
               onUpdateSettings={updateSettings}
               onToast={showToast}
             />

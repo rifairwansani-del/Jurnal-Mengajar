@@ -25,10 +25,13 @@ import {
   PortalDatabase,
   PrintFontFamily,
   ReportChartId,
+  ReportPrintPreferences,
   ReportSectionId,
+  SemesterType,
   SignatureLayoutPreset,
   SignaturePositionSettings,
   SystemSettings,
+  Teacher,
 } from '../types';
 import {
   PAPER_SIZE_CONFIG,
@@ -41,15 +44,21 @@ import {
   compareClassNames,
   compareStudentsByClassAndAbsent,
   DEFAULT_KOP_LINE_SPACING,
+  fitContainDimensions,
   formatCompactDateId,
   formatLongDateId,
   formatShortDateId,
+  formatTeacherAssignmentsSummary,
+  getAllTeacherClasses,
   getPrintFontCss,
+  getTeacherClassesForSubject,
+  getTeacherSubjects,
   getTodayISO,
-  imageUrlToPngDataUrl,
+  imageUrlToPngWithMeta,
   KOP_LINE_KEYS,
   makeGradeId,
   normalizeKopLineSpacing,
+  PngImageInfo,
   resolveKopLineStyle,
   summarizeJournalRow,
 } from '../utils/portalHelpers';
@@ -173,11 +182,19 @@ const PRESET_OPTIONS: { id: SignatureLayoutPreset; label: string }[] = [
 
 interface ReportsViewProps {
   db: PortalDatabase;
+  draftTeacherPrint?: { teacherId: string; nonce: number } | null;
+  onClearDraftTeacherPrint?: () => void;
   onUpdateSettings: (updater: (prev: SystemSettings) => SystemSettings) => void;
   onToast: (type: 'success' | 'error' | 'info', message: string) => void;
 }
 
-export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps) {
+export function ReportsView({
+  db,
+  draftTeacherPrint,
+  onClearDraftTeacherPrint,
+  onUpdateSettings,
+  onToast,
+}: ReportsViewProps) {
   const { students, teachers, schedules, journals, grades, accounts, settings, session } = db;
 
   const classOptions = useMemo(() => {
@@ -187,6 +204,33 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     });
     return Array.from(set).sort(compareClassNames);
   }, [settings.masterClasses, students]);
+
+  const subjectOptions = useMemo(() => {
+    const set = new Set(settings.masterSubjects);
+    teachers.forEach((t) => {
+      getTeacherSubjects(t).forEach((subj) => set.add(subj));
+    });
+    journals.forEach((j) => {
+      if (j.subject) set.add(j.subject);
+    });
+    grades.forEach((g) => {
+      if (g.subject) set.add(g.subject);
+    });
+    return Array.from(set);
+  }, [settings.masterSubjects, teachers, journals, grades]);
+
+  const resolveSubjectsFromPrefs = (
+    prefs: ReportPrintPreferences | undefined,
+    allSubjects: string[]
+  ): string[] => {
+    if (prefs?.selectedSubjects && prefs.selectedSubjects.length > 0) {
+      return prefs.selectedSubjects;
+    }
+    if (prefs?.subjectFilter && prefs.subjectFilter !== 'ALL') {
+      return [prefs.subjectFilter];
+    }
+    return allSubjects;
+  };
 
   const savedPrefs = settings.reportPrintPreferences;
 
@@ -206,20 +250,57 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       ? [...savedPrefs.selectedClasses].sort(compareClassNames)
       : classOptions
   );
-  const [subjectFilter, setSubjectFilter] = useState<string>(
-    () => savedPrefs?.subjectFilter ?? ''
+  const [selectedSubjects, setSelectedSubjects] = useState<string[]>(() =>
+    resolveSubjectsFromPrefs(savedPrefs, subjectOptions)
   );
   const [startDate, setStartDate] = useState<string>(() => savedPrefs?.startDate || '');
   const [endDate, setEndDate] = useState<string>(() => savedPrefs?.endDate || '');
+  const [reportAcademicYear, setReportAcademicYear] = useState<string>(
+    () => session.academicYear || settings.academicYear
+  );
+  const [reportSemester, setReportSemester] = useState<SemesterType>(
+    () => session.semester || settings.semester
+  );
   const [signerAccountId, setSignerAccountId] = useState<string>(
     () => savedPrefs?.signerAccountId ?? ''
   );
+  const [selectedTeacherId, setSelectedTeacherId] = useState<string>(
+    () => savedPrefs?.selectedTeacherId ?? ''
+  );
+
+  const activeTeacher = useMemo(
+    () => (selectedTeacherId ? teachers.find((t) => t.id === selectedTeacherId) ?? null : null),
+    [teachers, selectedTeacherId]
+  );
+
+  const reportYearOptions = useMemo(() => {
+    const set = new Set(settings.masterAcademicYears);
+    if (session.academicYear) set.add(session.academicYear);
+    if (settings.academicYear) set.add(settings.academicYear);
+    journals.forEach((j) => {
+      if (j.academicYear) set.add(j.academicYear);
+    });
+    grades.forEach((g) => {
+      if (g.academicYear) set.add(g.academicYear);
+    });
+    schedules.forEach((sc) => {
+      if (sc.academicYear) set.add(sc.academicYear);
+    });
+    return Array.from(set).filter(Boolean).sort();
+  }, [settings.masterAcademicYears, settings.academicYear, session.academicYear, journals, grades, schedules]);
+
+  useEffect(() => {
+    if (session.academicYear) setReportAcademicYear(session.academicYear);
+    if (session.semester) setReportSemester(session.semester);
+  }, [session.academicYear, session.semester]);
 
   // Multi-select dropdown states
   const [reportDropdownOpen, setReportDropdownOpen] = useState(false);
   const [classDropdownOpen, setClassDropdownOpen] = useState(false);
+  const [subjectDropdownOpen, setSubjectDropdownOpen] = useState(false);
   const reportDropdownRef = useRef<HTMLDivElement | null>(null);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
+  const subjectDropdownRef = useRef<HTMLDivElement | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const sigCanvasRef = useRef<HTMLDivElement | null>(null);
 
@@ -261,6 +342,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
 
   const prevSettingsRef = useRef(settings);
   const prevClassOptionsRef = useRef<string[]>(classOptions);
+  const prevSubjectOptionsRef = useRef<string[]>(subjectOptions);
 
   useEffect(() => {
     const prevClassOptions = prevClassOptionsRef.current;
@@ -277,6 +359,29 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   }, [classOptions, selectedClasses, settings.reportPrintPreferences.selectedClasses]);
 
   useEffect(() => {
+    const prevSubjOptions = prevSubjectOptionsRef.current;
+    if (prevSubjOptions === subjectOptions) return;
+    prevSubjectOptionsRef.current = subjectOptions;
+    if (
+      !settings.reportPrintPreferences.selectedSubjects?.length &&
+      (!settings.reportPrintPreferences.subjectFilter ||
+        settings.reportPrintPreferences.subjectFilter === 'ALL')
+    ) {
+      const wasAllSelected =
+        selectedSubjects.length === prevSubjOptions.length &&
+        selectedSubjects.every((s, i) => s === prevSubjOptions[i]);
+      if (wasAllSelected) {
+        setSelectedSubjects(subjectOptions);
+      }
+    }
+  }, [
+    subjectOptions,
+    selectedSubjects,
+    settings.reportPrintPreferences.selectedSubjects,
+    settings.reportPrintPreferences.subjectFilter,
+  ]);
+
+  useEffect(() => {
     const prev = prevSettingsRef.current;
     if (prev === settings) return;
 
@@ -290,6 +395,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       prevPrefs.selectedClasses && prevPrefs.selectedClasses.length > 0
         ? [...prevPrefs.selectedClasses].sort(compareClassNames)
         : classOptions;
+    const savedSubjectsPrev = resolveSubjectsFromPrefs(prevPrefs, subjectOptions);
 
     if (
       selectedReportTypes.length === prevPrefs.selectedReportTypes.length &&
@@ -319,10 +425,18 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           : classOptions
       );
     }
-    if (subjectFilter === prevPrefs.subjectFilter) setSubjectFilter(nextPrefs.subjectFilter);
+    if (
+      selectedSubjects.length === savedSubjectsPrev.length &&
+      selectedSubjects.every((s, i) => s === savedSubjectsPrev[i])
+    ) {
+      setSelectedSubjects(resolveSubjectsFromPrefs(nextPrefs, subjectOptions));
+    }
     if (startDate === prevPrefs.startDate) setStartDate(nextPrefs.startDate);
     if (endDate === prevPrefs.endDate) setEndDate(nextPrefs.endDate);
     if (signerAccountId === prevPrefs.signerAccountId) setSignerAccountId(nextPrefs.signerAccountId);
+    if (selectedTeacherId === (prevPrefs.selectedTeacherId ?? '')) {
+      setSelectedTeacherId(nextPrefs.selectedTeacherId ?? '');
+    }
     if (showKop === prevPrefs.showKop) setShowKop(nextPrefs.showKop);
     if (showTtdKepsek === prevPrefs.showTtdKepsek) setShowTtdKepsek(nextPrefs.showTtdKepsek);
     if (showTtdGuru === prevPrefs.showTtdGuru) setShowTtdGuru(nextPrefs.showTtdGuru);
@@ -353,13 +467,15 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   }, [
     settings,
     classOptions,
+    subjectOptions,
     selectedReportTypes,
     selectedChartTypes,
     selectedClasses,
-    subjectFilter,
+    selectedSubjects,
     startDate,
     endDate,
     signerAccountId,
+    selectedTeacherId,
     showKop,
     showTtdKepsek,
     showTtdGuru,
@@ -402,14 +518,95 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     null
   );
 
-  const activeSigner = useMemo(
-    () =>
-      resolveActiveSigner(
-        db,
-        signerAccountId && signerAccountId !== '__AUTO__' ? signerAccountId : undefined
-      ),
-    [db, signerAccountId]
-  );
+  const findAccountForTeacher = (teacher: Teacher) => {
+    const tEmail = (teacher.email || '').trim().toLowerCase();
+    const tNip = (teacher.nip || '').trim().toLowerCase();
+    const tName = (teacher.name || '').trim().toLowerCase();
+    return accounts.find((acc) => {
+      if (tEmail && acc.email.trim().toLowerCase() === tEmail) return true;
+      if (tNip && acc.nip.trim().toLowerCase() === tNip) return true;
+      if (tName && acc.name.trim().toLowerCase() === tName) return true;
+      return false;
+    });
+  };
+
+  const findTeacherForAccount = (accountId: string) => {
+    const acc = accounts.find((a) => a.id === accountId);
+    if (!acc) return undefined;
+    const aEmail = (acc.email || '').trim().toLowerCase();
+    const aNip = (acc.nip || '').trim().toLowerCase();
+    const aName = (acc.name || '').trim().toLowerCase();
+    return teachers.find((t) => {
+      if (aEmail && (t.email || '').trim().toLowerCase() === aEmail) return true;
+      if (aNip && (t.nip || '').trim().toLowerCase() === aNip) return true;
+      if (aName && (t.name || '').trim().toLowerCase() === aName) return true;
+      return false;
+    });
+  };
+
+  const applyTeacherPrintPreset = (teacherId: string, announce = true) => {
+    if (!teacherId) {
+      setSelectedTeacherId('');
+      setSelectedClasses(classOptions);
+      setSelectedSubjects(subjectOptions);
+      if (signerAccountId !== '__AUTO__') {
+        setSignerAccountId('');
+      }
+      if (announce) {
+        onToast('info', 'Filter guru direset ke semua kelas dan mata pelajaran.');
+      }
+      return;
+    }
+    const teacher = teachers.find((t) => t.id === teacherId);
+    if (!teacher) return;
+    const tSubjects = getTeacherSubjects(teacher);
+    const tClasses = getAllTeacherClasses(teacher).sort(compareClassNames);
+    setSelectedTeacherId(teacher.id);
+    setSelectedSubjects(tSubjects.length > 0 ? tSubjects : subjectOptions);
+    setSelectedClasses(tClasses.length > 0 ? tClasses : classOptions);
+    const matchedAcc = findAccountForTeacher(teacher);
+    setSignerAccountId(matchedAcc ? matchedAcc.id : '');
+    if (announce) {
+      const detail =
+        tSubjects.length > 0 || tClasses.length > 0
+          ? `${tSubjects.length} mapel & ${tClasses.length} kelas`
+          : 'belum ada mapel/kelas khusus';
+      onToast('success', `Siap cetak untuk ${teacher.name} (${detail}).`);
+    }
+  };
+
+  const lastDraftNonceRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!draftTeacherPrint) return;
+    if (lastDraftNonceRef.current === draftTeacherPrint.nonce) return;
+    lastDraftNonceRef.current = draftTeacherPrint.nonce;
+    applyTeacherPrintPreset(draftTeacherPrint.teacherId, false);
+    onClearDraftTeacherPrint?.();
+  }, [draftTeacherPrint]);
+
+  const activeSigner = useMemo(() => {
+    if (signerAccountId && signerAccountId !== '__AUTO__') {
+      return resolveActiveSigner(db, signerAccountId);
+    }
+    const resolved = resolveActiveSigner(db, undefined);
+    if (activeTeacher) {
+      const matchedAcc = findAccountForTeacher(activeTeacher);
+      if (matchedAcc) {
+        return resolveActiveSigner(db, matchedAcc.id);
+      }
+      return {
+        ...resolved,
+        name: activeTeacher.name || resolved.name,
+        nip: activeTeacher.nip || resolved.nip,
+        roleLabel:
+          activeTeacher.position && activeTeacher.position !== 'Admin / Operator Sekolah'
+            ? activeTeacher.position
+            : resolved.roleLabel,
+        signatureImage: '',
+      };
+    }
+    return resolved;
+  }, [db, signerAccountId, activeTeacher, accounts]);
 
   const updateSigPos = (patch: Partial<SignaturePositionSettings>) => {
     setSigPos((prev) => ({
@@ -438,14 +635,19 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     const classesChanged =
       selectedClasses.length !== savedClasses.length ||
       selectedClasses.some((c, i) => c !== savedClasses[i]);
+    const savedSubjects = resolveSubjectsFromPrefs(prefs, subjectOptions);
+    const subjectsChanged =
+      selectedSubjects.length !== savedSubjects.length ||
+      selectedSubjects.some((s, i) => s !== savedSubjects[i]);
     const prefsChanged =
       reportTypesChanged ||
       chartTypesChanged ||
       classesChanged ||
-      subjectFilter !== prefs.subjectFilter ||
+      subjectsChanged ||
       startDate !== prefs.startDate ||
       endDate !== prefs.endDate ||
       signerAccountId !== prefs.signerAccountId ||
+      selectedTeacherId !== (prefs.selectedTeacherId ?? '') ||
       showKop !== prefs.showKop ||
       showTtdKepsek !== prefs.showTtdKepsek ||
       showTtdGuru !== prefs.showTtdGuru ||
@@ -487,13 +689,15 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     settings.kopSurat.logoRightSize,
     settings.kopSurat.lineSpacing,
     classOptions,
+    subjectOptions,
     selectedReportTypes,
     selectedChartTypes,
     selectedClasses,
-    subjectFilter,
+    selectedSubjects,
     startDate,
     endDate,
     signerAccountId,
+    selectedTeacherId,
     showKop,
     showTtdKepsek,
     showTtdGuru,
@@ -537,10 +741,12 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
         selectedReportTypes,
         selectedChartTypes,
         selectedClasses,
-        subjectFilter: subjectFilter || 'ALL',
+        selectedSubjects,
+        subjectFilter: selectedSubjects.length === 1 ? selectedSubjects[0] : 'ALL',
         startDate,
         endDate,
         signerAccountId: signerAccountId === '__AUTO__' ? '' : signerAccountId,
+        selectedTeacherId,
         showKop,
         showTtdKepsek,
         showTtdGuru,
@@ -564,10 +770,11 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
         : REPORT_CHART_OPTIONS.map((c) => c.id)
     );
     setSelectedClasses(prefs.selectedClasses.length > 0 ? prefs.selectedClasses : classOptions);
-    setSubjectFilter(prefs.subjectFilter);
+    setSelectedSubjects(resolveSubjectsFromPrefs(prefs, subjectOptions));
     setStartDate(prefs.startDate);
     setEndDate(prefs.endDate);
     setSignerAccountId(prefs.signerAccountId);
+    setSelectedTeacherId(prefs.selectedTeacherId ?? '');
     setShowKop(prefs.showKop);
     setShowTtdKepsek(prefs.showTtdKepsek);
     setShowTtdGuru(prefs.showTtdGuru);
@@ -637,6 +844,9 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       }
       if (reportDropdownRef.current && !reportDropdownRef.current.contains(e.target as Node)) {
         setReportDropdownOpen(false);
+      }
+      if (subjectDropdownRef.current && !subjectDropdownRef.current.contains(e.target as Node)) {
+        setSubjectDropdownOpen(false);
       }
     };
     document.addEventListener('mousedown', handleOutside);
@@ -846,6 +1056,20 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     );
   };
 
+  const toggleSubjectSelection = (subj: string) => {
+    setSelectedSubjects((prev) => {
+      const nextSet = new Set(prev);
+      if (nextSet.has(subj)) {
+        nextSet.delete(subj);
+      } else {
+        nextSet.add(subj);
+      }
+      const ordered = subjectOptions.filter((s) => nextSet.has(s));
+      const extras = Array.from(nextSet).filter((s) => !subjectOptions.includes(s));
+      return [...ordered, ...extras];
+    });
+  };
+
   const toggleReportTypeSelection = (id: ReportSectionId) => {
     setSelectedReportTypes((prev) => {
       const nextSet = new Set(prev);
@@ -872,13 +1096,20 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
 
   const filteredJournals = useMemo(() => {
     const clsSet = new Set(selectedClasses);
+    const subjSet = new Set(selectedSubjects);
     return journals
       .filter((j) => {
-        if (j.academicYear !== session.academicYear || j.semester !== session.semester) {
+        if (j.academicYear !== reportAcademicYear || j.semester !== reportSemester) {
           return false;
         }
         if (!clsSet.has(j.className)) return false;
-        if (subjectFilter && subjectFilter !== 'ALL' && j.subject !== subjectFilter) return false;
+        if (!subjSet.has(j.subject)) return false;
+        if (activeTeacher) {
+          const assignedClasses = getTeacherClassesForSubject(activeTeacher, j.subject);
+          if (assignedClasses.length > 0 && !assignedClasses.includes(j.className)) {
+            return false;
+          }
+        }
         if (startDate && j.date < startDate) return false;
         if (endDate && j.date > endDate) return false;
         return true;
@@ -888,18 +1119,26 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       );
   }, [
     journals,
-    session.academicYear,
-    session.semester,
+    reportAcademicYear,
+    reportSemester,
     selectedClasses,
-    subjectFilter,
+    selectedSubjects,
+    activeTeacher,
     startDate,
     endDate,
   ]);
 
   const activeGradeSubjects = useMemo(() => {
-    if (subjectFilter && subjectFilter !== 'ALL') return [subjectFilter];
-    return settings.masterSubjects;
-  }, [subjectFilter, settings.masterSubjects]);
+    return selectedSubjects;
+  }, [selectedSubjects]);
+
+  const getSubjectsForClassSheet = (cls: string): string[] => {
+    if (!activeTeacher) return activeGradeSubjects;
+    return activeGradeSubjects.filter((subj) => {
+      const assignedClasses = getTeacherClassesForSubject(activeTeacher, subj);
+      return assignedClasses.length === 0 || assignedClasses.includes(cls);
+    });
+  };
 
   const getAttendanceBlockForClass = (cls: string) => {
     const classStudents = students
@@ -917,7 +1156,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       const scores: Record<string, number | null> = {};
       const nums: number[] = [];
       settings.masterExamTypes.forEach((ex) => {
-        const id = makeGradeId(session.academicYear, session.semester, cls, subj, ex, st.id);
+        const id = makeGradeId(reportAcademicYear, reportSemester, cls, subj, ex, st.id);
         const found = grades.find((g) => g.id === id);
         const val = found ? found.score : null;
         scores[ex] = val;
@@ -927,6 +1166,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       return {
         no: idx + 1,
         nis: st.nis,
+        nisn: st.nisn || '-',
         name: st.name,
         scores,
         avg,
@@ -963,6 +1203,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       return {
         no: idx + 1,
         nis: st.nis,
+        nisn: st.nisn || '-',
         name: st.name,
         monthCounts,
         totals,
@@ -1059,6 +1300,11 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     return { summary, chronology };
   }, [filteredJournals, students]);
 
+  const getMonitoringAbsenceForClass = (cls: string) => ({
+    summary: monitoringAbsenceData.summary.filter((it) => it.className === cls),
+    chronology: monitoringAbsenceData.chronology.filter((c) => c.className === cls),
+  });
+
   // 6. Ketuntasan & Remedial (< KKM 75)
   const getRemedialDataForClassAndSubject = (cls: string, subj: string) => {
     const { rows } = getGradeBlockForClassAndSubject(cls, subj);
@@ -1114,8 +1360,8 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     const subjectsWithData = settings.masterSubjects.filter((subj) =>
       grades.some(
         (g) =>
-          g.academicYear === session.academicYear &&
-          g.semester === session.semester &&
+          g.academicYear === reportAcademicYear &&
+          g.semester === reportSemester &&
           g.className === cls &&
           g.subject === subj &&
           g.score !== null
@@ -1130,7 +1376,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       subjects.forEach((subj) => {
         const nums: number[] = [];
         settings.masterExamTypes.forEach((ex) => {
-          const id = makeGradeId(session.academicYear, session.semester, cls, subj, ex, st.id);
+          const id = makeGradeId(reportAcademicYear, reportSemester, cls, subj, ex, st.id);
           const found = grades.find((g) => g.id === id);
           if (found && found.score !== null) nums.push(found.score);
         });
@@ -1184,18 +1430,18 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   // 9. Aktivitas & Penilaian Guru (Pimpinan)
   const teacherActivityData = useMemo(() => {
     const periodSchedules = schedules.filter(
-      (sc) => sc.academicYear === session.academicYear && sc.semester === session.semester
+      (sc) => sc.academicYear === reportAcademicYear && sc.semester === reportSemester
     );
     const periodJournals = journals.filter((j) => {
-      if (j.academicYear !== session.academicYear || j.semester !== session.semester) return false;
+      if (j.academicYear !== reportAcademicYear || j.semester !== reportSemester) return false;
       if (startDate && j.date < startDate) return false;
       if (endDate && j.date > endDate) return false;
       return true;
     });
     const periodGrades = grades.filter(
       (g) =>
-        g.academicYear === session.academicYear &&
-        g.semester === session.semester &&
+        g.academicYear === reportAcademicYear &&
+        g.semester === reportSemester &&
         g.score !== null
     );
 
@@ -1224,14 +1470,31 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       const tSchedules = periodSchedules.filter(
         (sc) => sc.teacherName.trim().toLowerCase() === tNorm
       );
-      const classSubjPairs = new Set(tSchedules.map((sc) => `${sc.className}__${sc.subject}`));
-
-      const matchedJournals = periodJournals.filter((j) => {
-        if (classSubjPairs.size > 0) {
-          return classSubjPairs.has(`${j.className}__${j.subject}`);
-        }
-        return t.subject && j.subject.toLowerCase() === t.subject.toLowerCase();
+      const tSubjects = getTeacherSubjects(t);
+      const tSubjectSet = new Set(tSubjects.map((s) => s.toLowerCase()));
+      const assignedPairs = new Set<string>();
+      tSubjects.forEach((subj) => {
+        getTeacherClassesForSubject(t, subj).forEach((clsName) => {
+          assignedPairs.add(`${clsName}__${subj.toLowerCase()}`);
+        });
       });
+      const schedulePairs = new Set(
+        tSchedules.map((sc) => `${sc.className}__${sc.subject.toLowerCase()}`)
+      );
+
+      const matchesTeacherRecord = (recClass: string, recSubject: string) => {
+        const key = `${recClass}__${recSubject.toLowerCase()}`;
+        if (assignedPairs.size > 0 && assignedPairs.has(key)) return true;
+        if (schedulePairs.size > 0 && schedulePairs.has(key)) return true;
+        if (assignedPairs.size === 0 && schedulePairs.size === 0) {
+          return tSubjectSet.has(recSubject.toLowerCase());
+        }
+        return false;
+      };
+
+      const matchedJournals = periodJournals.filter((j) =>
+        matchesTeacherRecord(j.className, j.subject)
+      );
 
       let totalH = 0;
       let totalRec = 0;
@@ -1242,12 +1505,9 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       });
       const avgAttendance = totalRec > 0 ? (totalH / totalRec) * 100 : null;
 
-      const matchedGrades = periodGrades.filter((g) => {
-        if (classSubjPairs.size > 0) {
-          return classSubjPairs.has(`${g.className}__${g.subject}`);
-        }
-        return t.subject && g.subject.toLowerCase() === t.subject.toLowerCase();
-      });
+      const matchedGrades = periodGrades.filter((g) =>
+        matchesTeacherRecord(g.className, g.subject)
+      );
       const assessedStudentIds = new Set(matchedGrades.map((g) => g.studentId));
       const avgGrade =
         matchedGrades.length > 0
@@ -1268,7 +1528,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
         nip: t.nip || '-',
         name: t.name,
         position: t.position || 'Guru Mapel',
-        subject: t.subject || '-',
+        subject: formatTeacherAssignmentsSummary(t) || t.subject || '-',
         scheduleCount: tSchedules.length,
         journalCount: matchedJournals.length,
         avgAttendance,
@@ -1302,8 +1562,8 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     journals,
     grades,
     filteredJournals,
-    session.academicYear,
-    session.semester,
+    reportAcademicYear,
+    reportSemester,
     session.email,
     startDate,
     endDate,
@@ -1313,57 +1573,71 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     settings.masterSubjects,
   ]);
 
+  const orderedSelectedReportTypes = useMemo(
+    () => REPORT_TYPE_OPTIONS.map((o) => o.id).filter((id) => selectedReportTypes.includes(id)),
+    [selectedReportTypes]
+  );
+
+  const orderedSelectedClasses = useMemo(
+    () => [...selectedClasses].sort(compareClassNames),
+    [selectedClasses]
+  );
+
   const reportTitle = useMemo(() => {
-    if (selectedReportTypes.length === 0) return 'LAPORAN ADMINISTRASI MENGAJAR';
-    if (selectedReportTypes.length === REPORT_TYPE_OPTIONS.length) {
+    if (orderedSelectedReportTypes.length === 0) return 'LAPORAN ADMINISTRASI MENGAJAR';
+    if (orderedSelectedReportTypes.length === REPORT_TYPE_OPTIONS.length) {
       return 'PAKET LENGKAP LAPORAN PORTAL E-GURU';
     }
-    if (selectedReportTypes.length === 1) {
-      const opt = REPORT_TYPE_OPTIONS.find((o) => o.id === selectedReportTypes[0]);
+    if (orderedSelectedReportTypes.length === 1) {
+      const opt = REPORT_TYPE_OPTIONS.find((o) => o.id === orderedSelectedReportTypes[0]);
       return opt ? opt.officialTitle : 'LAPORAN ADMINISTRASI MENGAJAR';
     }
-    const labels = REPORT_TYPE_OPTIONS.filter((o) => selectedReportTypes.includes(o.id)).map((o) =>
+    const labels = REPORT_TYPE_OPTIONS.filter((o) => orderedSelectedReportTypes.includes(o.id)).map((o) =>
       o.label.toUpperCase()
     );
     if (labels.length <= 3) return `LAPORAN TERPADU: ${labels.join(' · ')}`;
     return `LAPORAN TERPADU (${labels.length} JENIS): ${labels.slice(0, 2).join(' · ')} & Lainnya`;
-  }, [selectedReportTypes]);
+  }, [orderedSelectedReportTypes]);
 
   const reportSlug = useMemo(() => {
-    if (selectedReportTypes.length === REPORT_TYPE_OPTIONS.length) return 'paket_lengkap';
-    if (selectedReportTypes.length === 0) return 'kosong';
-    return selectedReportTypes.slice(0, 3).join('_');
-  }, [selectedReportTypes]);
+    if (orderedSelectedReportTypes.length === REPORT_TYPE_OPTIONS.length) return 'paket_lengkap';
+    if (orderedSelectedReportTypes.length === 0) return 'kosong';
+    return orderedSelectedReportTypes.slice(0, 3).join('_');
+  }, [orderedSelectedReportTypes]);
 
-  const periodSubtitle = `Tahun Ajaran ${session.academicYear} · Semester ${session.semester} · Mata Pelajaran: ${
-    !subjectFilter || subjectFilter === 'ALL' ? 'Semua Mata Pelajaran' : subjectFilter
-  }`;
+  const subjectLabel =
+    selectedSubjects.length === 0
+      ? 'Belum Dipilih'
+      : selectedSubjects.length === subjectOptions.length && subjectOptions.length > 0
+      ? 'Semua Mata Pelajaran'
+      : selectedSubjects.join(', ');
 
-  const includeCharts = selectedReportTypes.includes('charts');
+  const includeCharts = orderedSelectedReportTypes.includes('charts');
 
   const chartCards = useMemo(() => {
     if (!includeCharts) return [];
     return buildReportCharts({
       selectedChartTypes,
-      selectedClasses,
-      subjectFilter: subjectFilter || 'ALL',
+      selectedClasses: orderedSelectedClasses,
+      selectedSubjects,
+      subjectFilter: selectedSubjects.length === 1 ? selectedSubjects[0] : 'ALL',
       students,
       journals: filteredJournals,
       grades,
-      academicYear: session.academicYear,
-      semester: session.semester,
+      academicYear: reportAcademicYear,
+      semester: reportSemester,
       fontFamily: effectiveFontFamily,
     });
   }, [
     includeCharts,
     selectedChartTypes,
-    selectedClasses,
-    subjectFilter,
+    orderedSelectedClasses,
+    selectedSubjects,
     students,
     filteredJournals,
     grades,
-    session.academicYear,
-    session.semester,
+    reportAcademicYear,
+    reportSemester,
     effectiveFontFamily,
   ]);
 
@@ -1374,55 +1648,155 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
         }`
       : 'Seluruh Tanggal Pertemuan';
 
-  // Build Workbook for XLSX / XLS
-  const buildWorkbook = () => {
-    const wb = XLSX.utils.book_new();
-    const has = (id: ReportSectionId) => selectedReportTypes.includes(id);
+  const reportSheets = useMemo(() => {
+    const classScopedTypes = new Set<ReportSectionId>([
+      'journal',
+      'attendance',
+      'attendance_monthly',
+      'attendance_monitoring',
+      'grades',
+      'grades_remedial',
+      'grades_leger',
+      'students_roster',
+    ]);
 
-    if (has('journal')) {
-      const jRows: (string | number)[][] = [
-        [
-          'No',
-          'Tanggal',
-          'Jam Ke',
-          'Kelas',
-          'Mata Pelajaran',
-          'Materi Pokok',
-          'Kegiatan Pembelajaran',
-          'H',
-          'S',
-          'I',
-          'A',
-          'D',
-        ],
-        ...filteredJournals.map((j, idx) => {
-          const sum = summarizeJournalRow(j);
-          return [
-            idx + 1,
-            formatShortDateId(j.date),
-            j.jamKe,
-            j.className,
-            j.subject,
-            j.topic,
-            j.activity,
-            sum.counts.H,
-            sum.counts.S,
-            sum.counts.I,
-            sum.counts.A,
-            sum.counts.D,
-          ];
-        }),
-      ];
-      const ws = XLSX.utils.aoa_to_sheet(jRows);
-      XLSX.utils.book_append_sheet(wb, ws, 'Jurnal Mengajar');
+    const sheets: {
+      key: string;
+      reportType: ReportSectionId;
+      className: string | null;
+      label: string;
+      officialTitle: string;
+      subtitle: string;
+    }[] = [];
+
+    orderedSelectedClasses.forEach((cls) => {
+      const classSubjects = getSubjectsForClassSheet(cls);
+      const classSubjectLabel =
+        classSubjects.length === 0
+          ? subjectLabel
+          : !activeTeacher && classSubjects.length === subjectOptions.length && subjectOptions.length > 0
+          ? 'Semua Mata Pelajaran'
+          : classSubjects.join(', ');
+      const teacherSuffix = activeTeacher ? ` · Guru: ${activeTeacher.name}` : '';
+      orderedSelectedReportTypes.forEach((reportType) => {
+        if (!classScopedTypes.has(reportType)) return;
+        const opt = REPORT_TYPE_OPTIONS.find((o) => o.id === reportType);
+        if (!opt) return;
+        const subtitle =
+          reportType === 'students_roster' || reportType === 'grades_leger'
+            ? `Kelas ${cls} · Tahun Ajaran ${reportAcademicYear} · Semester ${reportSemester}${teacherSuffix}`
+            : `Kelas ${cls} · Tahun Ajaran ${reportAcademicYear} · Semester ${reportSemester} · Mata Pelajaran: ${classSubjectLabel} · Rentang Tanggal: ${dateRangeLabel}${teacherSuffix}`;
+        sheets.push({
+          key: `${cls}__${reportType}`,
+          reportType,
+          className: cls,
+          label: opt.label,
+          officialTitle: opt.officialTitle,
+          subtitle,
+        });
+      });
+    });
+
+    if (orderedSelectedReportTypes.includes('teacher_activity')) {
+      const opt = REPORT_TYPE_OPTIONS.find((o) => o.id === 'teacher_activity')!;
+      sheets.push({
+        key: 'global__teacher_activity',
+        reportType: 'teacher_activity',
+        className: null,
+        label: opt.label,
+        officialTitle: opt.officialTitle,
+        subtitle: `Tahun Ajaran ${reportAcademicYear} · Semester ${reportSemester} · Rentang Tanggal: ${dateRangeLabel}`,
+      });
     }
 
-    if (has('attendance')) {
-      selectedClasses.forEach((cls) => {
+    if (orderedSelectedReportTypes.includes('charts')) {
+      const opt = REPORT_TYPE_OPTIONS.find((o) => o.id === 'charts')!;
+      sheets.push({
+        key: 'global__charts',
+        reportType: 'charts',
+        className: null,
+        label: opt.label,
+        officialTitle: opt.officialTitle,
+        subtitle: `Kelas: ${orderedSelectedClasses.length > 0 ? orderedSelectedClasses.join(', ') : 'Belum Dipilih'} · Tahun Ajaran ${reportAcademicYear} · Semester ${reportSemester} · Mata Pelajaran: ${subjectLabel}`,
+      });
+    }
+
+    return sheets;
+  }, [
+    orderedSelectedClasses,
+    orderedSelectedReportTypes,
+    reportAcademicYear,
+    reportSemester,
+    subjectLabel,
+    dateRangeLabel,
+    activeTeacher,
+    activeGradeSubjects,
+    subjectOptions.length,
+  ]);
+
+  // Build Workbook for XLSX / XLS (grouped per class first, separate sheet per report type)
+  const buildWorkbook = () => {
+    const wb = XLSX.utils.book_new();
+    const usedNames = new Set<string>();
+    const appendUniqueSheet = (ws: XLSX.WorkSheet, rawName: string) => {
+      const sanitized = rawName.replace(/[\\/?*[\]]/g, '').trim() || 'Sheet';
+      let candidate = sanitized.slice(0, 31);
+      let suffix = 2;
+      while (usedNames.has(candidate.toLowerCase())) {
+        const tag = ` (${suffix++})`;
+        candidate = `${sanitized.slice(0, Math.max(1, 31 - tag.length))}${tag}`;
+      }
+      usedNames.add(candidate.toLowerCase());
+      XLSX.utils.book_append_sheet(wb, ws, candidate);
+    };
+
+    reportSheets.forEach((sheet) => {
+      const cls = sheet.className;
+
+      if (sheet.reportType === 'journal' && cls) {
+        const classJournals = filteredJournals.filter((j) => j.className === cls);
+        const jRows: (string | number)[][] = [
+          [
+            'No',
+            'Tanggal',
+            'Jam Ke',
+            'Kelas',
+            'Mata Pelajaran',
+            'Materi Pokok',
+            'Kegiatan Pembelajaran',
+            'H',
+            'S',
+            'I',
+            'A',
+            'D',
+          ],
+          ...classJournals.map((j, idx) => {
+            const sum = summarizeJournalRow(j);
+            return [
+              idx + 1,
+              formatShortDateId(j.date),
+              j.jamKe,
+              j.className,
+              j.subject,
+              j.topic,
+              j.activity,
+              sum.counts.H,
+              sum.counts.S,
+              sum.counts.I,
+              sum.counts.A,
+              sum.counts.D,
+            ];
+          }),
+        ];
+        appendUniqueSheet(XLSX.utils.aoa_to_sheet(jRows), `${cls} Jurnal`);
+      }
+
+      if (sheet.reportType === 'attendance' && cls) {
         const { classStudents, classJournals } = getAttendanceBlockForClass(cls);
         const header = [
           'No',
           'NIS',
+          'NISN',
           'Nama Siswa',
           ...classJournals.map((j) => `${formatCompactDateId(j.date)} (${j.subject})`),
           'H',
@@ -1446,6 +1820,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           return [
             idx + 1,
             st.nis,
+            st.nisn || '-',
             st.name,
             ...cells,
             counts.H,
@@ -1456,17 +1831,15 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             pct,
           ];
         });
-        const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
-        XLSX.utils.book_append_sheet(wb, ws, `Absen ${cls}`.slice(0, 31));
-      });
-    }
+        appendUniqueSheet(XLSX.utils.aoa_to_sheet([header, ...body]), `${cls} Hadir`);
+      }
 
-    if (has('attendance_monthly')) {
-      selectedClasses.forEach((cls) => {
+      if (sheet.reportType === 'attendance_monthly' && cls) {
         const { months, rows } = getMonthlyAttendanceForClass(cls);
         const header = [
           'No',
           'NIS',
+          'NISN',
           'Nama Siswa',
           ...months.map((m) => formatMonthLabelId(m)),
           'Pertemuan',
@@ -1480,6 +1853,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
         const body = rows.map((r) => [
           r.no,
           r.nis,
+          r.nisn,
           r.name,
           ...months.map((m) => {
             const mc = r.monthCounts[m];
@@ -1493,115 +1867,120 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           r.totals.D,
           r.pct !== null ? `${r.pct.toFixed(0)}%` : '-',
         ]);
-        const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
-        XLSX.utils.book_append_sheet(wb, ws, `Presensi Bln ${cls}`.slice(0, 31));
-      });
-    }
+        appendUniqueSheet(XLSX.utils.aoa_to_sheet([header, ...body]), `${cls} Presensi`);
+      }
 
-    if (has('attendance_monitoring')) {
-      const sumHeader = ['No', 'NIS', 'Nama Siswa', 'Kelas', 'S', 'I', 'A', 'D', 'Total', 'Status Pembinaan'];
-      const sumBody = monitoringAbsenceData.summary.map((item, idx) => [
-        idx + 1,
-        item.nis,
-        item.name,
-        item.className,
-        item.S,
-        item.I,
-        item.A,
-        item.D,
-        item.total,
-        item.action,
-      ]);
-      XLSX.utils.book_append_sheet(
-        wb,
-        XLSX.utils.aoa_to_sheet([sumHeader, ...sumBody]),
-        'Rekap SIAD'
-      );
+      if (sheet.reportType === 'attendance_monitoring' && cls) {
+        const clsMonitoring = getMonitoringAbsenceForClass(cls);
+        const sumHeader = ['No', 'NIS', 'Nama Siswa', 'Kelas', 'S', 'I', 'A', 'D', 'Total', 'Status Pembinaan'];
+        const sumBody = clsMonitoring.summary.map((item, idx) => [
+          idx + 1,
+          item.nis,
+          item.name,
+          item.className,
+          item.S,
+          item.I,
+          item.A,
+          item.D,
+          item.total,
+          item.action,
+        ]);
+        appendUniqueSheet(XLSX.utils.aoa_to_sheet([sumHeader, ...sumBody]), `${cls} Rekap SIAD`);
 
-      const logHeader = ['No', 'Tanggal', 'Jam', 'Kelas', 'Mapel', 'NIS', 'Nama Siswa', 'Status', 'Keterangan'];
-      const logBody = monitoringAbsenceData.chronology.map((c, idx) => [
-        idx + 1,
-        formatShortDateId(c.date),
-        c.jamKe,
-        c.className,
-        c.subject,
-        c.nis,
-        c.studentName,
-        c.status,
-        c.note,
-      ]);
-      XLSX.utils.book_append_sheet(
-        wb,
-        XLSX.utils.aoa_to_sheet([logHeader, ...logBody]),
-        'Kronologi SIAD'
-      );
-    }
+        const logHeader = ['No', 'Tanggal', 'Jam', 'Kelas', 'Mapel', 'NIS', 'Nama Siswa', 'Status', 'Keterangan'];
+        const logBody = clsMonitoring.chronology.map((c, idx) => [
+          idx + 1,
+          formatShortDateId(c.date),
+          c.jamKe,
+          c.className,
+          c.subject,
+          c.nis,
+          c.studentName,
+          c.status,
+          c.note,
+        ]);
+        appendUniqueSheet(XLSX.utils.aoa_to_sheet([logHeader, ...logBody]), `${cls} Log SIAD`);
+      }
 
-    if (has('grades')) {
-      selectedClasses.forEach((cls) => {
-        activeGradeSubjects.forEach((subj) => {
+      if (sheet.reportType === 'grades' && cls) {
+        const classGradeSubjects = getSubjectsForClassSheet(cls);
+        const visibleSubjects = classGradeSubjects.filter((subj) => {
           const { rows } = getGradeBlockForClassAndSubject(cls, subj);
-          const hasAnyScore = rows.some((r) => r.avg !== null);
-          if (!hasAnyScore && (!subjectFilter || subjectFilter === 'ALL')) return;
-          const header = [
-            'No',
-            'NIS',
-            'Nama Siswa',
-            ...settings.masterExamTypes,
-            'Rata-rata',
-            'Status',
-          ];
-          const body = rows.map((r) => [
-            r.no,
-            r.nis,
-            r.name,
-            ...settings.masterExamTypes.map((ex) => (r.scores[ex] !== null ? r.scores[ex] : '')),
-            r.avg !== null ? Number(r.avg.toFixed(1)) : '',
-            r.status,
-          ]);
-          const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
-          const safeSheetName = `Nilai ${cls} ${subj}`.replace(/[\\/?*[\]]/g, '').slice(0, 31);
-          XLSX.utils.book_append_sheet(wb, ws, safeSheetName);
+          return rows.some((r) => r.avg !== null) || classGradeSubjects.length === 1;
         });
-      });
-    }
+        if (visibleSubjects.length === 0) {
+          appendUniqueSheet(
+            XLSX.utils.aoa_to_sheet([[`Belum ada nilai tercatat untuk kelas ${cls} pada mata pelajaran terpilih.`]]),
+            `${cls} Nilai`
+          );
+        } else {
+          visibleSubjects.forEach((subj) => {
+            const { rows } = getGradeBlockForClassAndSubject(cls, subj);
+            const header = [
+              'No',
+              'NIS',
+              'NISN',
+              'Nama Siswa',
+              ...settings.masterExamTypes,
+              'Rata-rata',
+              'Status',
+            ];
+            const body = rows.map((r) => [
+              r.no,
+              r.nis,
+              r.nisn,
+              r.name,
+              ...settings.masterExamTypes.map((ex) => (r.scores[ex] !== null ? r.scores[ex] : '')),
+              r.avg !== null ? Number(r.avg.toFixed(1)) : '',
+              r.status,
+            ]);
+            appendUniqueSheet(XLSX.utils.aoa_to_sheet([header, ...body]), `${cls} Nilai ${subj}`);
+          });
+        }
+      }
 
-    if (has('grades_remedial')) {
-      selectedClasses.forEach((cls) => {
-        activeGradeSubjects.forEach((subj) => {
+      if (sheet.reportType === 'grades_remedial' && cls) {
+        const classGradeSubjects = getSubjectsForClassSheet(cls);
+        const visibleSubjects = classGradeSubjects.filter((subj) => {
           const rem = getRemedialDataForClassAndSubject(cls, subj);
-          if (rem.assessedCount === 0 && (!subjectFilter || subjectFilter === 'ALL')) return;
-          const header = [
-            'No',
-            'NIS',
-            'Nama Siswa',
-            'Tertinggi',
-            'Terendah',
-            'Komponen < KKM',
-            'Rata-rata',
-            'Selisih KKM',
-            'Rekomendasi',
-          ];
-          const body = rem.remedialList.map((r) => [
-            r.no,
-            r.nis,
-            r.name,
-            r.maxScore,
-            r.minScore,
-            r.belowItems,
-            Number(r.avg.toFixed(1)),
-            Number(r.gap.toFixed(1)),
-            r.rekomendasi,
-          ]);
-          const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
-          const safeSheetName = `Remed ${cls} ${subj}`.replace(/[\\/?*[\]]/g, '').slice(0, 31);
-          XLSX.utils.book_append_sheet(wb, ws, safeSheetName);
+          return rem.assessedCount > 0 || classGradeSubjects.length === 1;
         });
-      });
-    }
+        if (visibleSubjects.length === 0) {
+          appendUniqueSheet(
+            XLSX.utils.aoa_to_sheet([[`Belum ada data ketuntasan/remedial untuk kelas ${cls} pada mata pelajaran terpilih.`]]),
+            `${cls} Remedial`
+          );
+        } else {
+          visibleSubjects.forEach((subj) => {
+            const rem = getRemedialDataForClassAndSubject(cls, subj);
+            const header = [
+              'No',
+              'NIS',
+              'Nama Siswa',
+              'Tertinggi',
+              'Terendah',
+              'Komponen < KKM',
+              'Rata-rata',
+              'Selisih KKM',
+              'Rekomendasi',
+            ];
+            const body = rem.remedialList.map((r) => [
+              r.no,
+              r.nis,
+              r.name,
+              r.maxScore,
+              r.minScore,
+              r.belowItems,
+              Number(r.avg.toFixed(1)),
+              Number(r.gap.toFixed(1)),
+              r.rekomendasi,
+            ]);
+            appendUniqueSheet(XLSX.utils.aoa_to_sheet([header, ...body]), `${cls} Remed ${subj}`);
+          });
+        }
+      }
 
-    if (has('grades_leger')) {
-      selectedClasses.forEach((cls) => {
+      if (sheet.reportType === 'grades_leger' && cls) {
         const { subjects, rows } = getCombinedLegerForClass(cls);
         const header = ['Peringkat', 'NIS', 'Nama Siswa', ...subjects, 'Jumlah', 'Rata-rata', 'Status'];
         const body = rows.map((r) => [
@@ -1613,83 +1992,79 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           r.overallAvg !== null ? Number(r.overallAvg.toFixed(1)) : '',
           r.status,
         ]);
-        const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
-        XLSX.utils.book_append_sheet(wb, ws, `Leger ${cls}`.slice(0, 31));
-      });
-    }
+        appendUniqueSheet(XLSX.utils.aoa_to_sheet([header, ...body]), `${cls} Leger`);
+      }
 
-    if (has('students_roster')) {
-      const header = [
-        'No',
-        'NIS',
-        'NISN',
-        'Nama Siswa',
-        'L/P',
-        'Kelas',
-        'No Absen',
-        'Tempat, Tgl Lahir',
-        'No. HP',
-        'Wali Kelas',
-        'Guru BK',
-        'Status',
-      ];
-      const body = studentRosterRows.map((st, idx) => [
-        idx + 1,
-        st.nis,
-        st.nisn,
-        st.name,
-        st.gender,
-        st.className,
-        st.absentNo || '-',
-        `${st.birthPlace || '-'}, ${st.birthDate || '-'}`,
-        st.phone || '-',
-        st.homeroomTeacher || '-',
-        st.counselorTeacher || '-',
-        st.status,
-      ]);
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([header, ...body]), 'Daftar Siswa');
-    }
+      if (sheet.reportType === 'students_roster' && cls) {
+        const clsStudents = studentRosterRows.filter((s) => s.className === cls);
+        const header = [
+          'No',
+          'NIS',
+          'NISN',
+          'Nama Siswa',
+          'L/P',
+          'Kelas',
+          'No Absen',
+          'Tempat, Tgl Lahir',
+          'No. HP',
+          'Wali Kelas',
+          'Guru BK',
+          'Status',
+        ];
+        const body = clsStudents.map((st, idx) => [
+          idx + 1,
+          st.nis,
+          st.nisn,
+          st.name,
+          st.gender,
+          st.className,
+          st.absentNo || '-',
+          `${st.birthPlace || '-'}, ${st.birthDate || '-'}`,
+          st.phone || '-',
+          st.homeroomTeacher || '-',
+          st.counselorTeacher || '-',
+          st.status,
+        ]);
+        appendUniqueSheet(XLSX.utils.aoa_to_sheet([header, ...body]), `${cls} Siswa`);
+      }
 
-    if (has('teacher_activity')) {
-      const header = [
-        'No',
-        'NIP',
-        'Nama Guru',
-        'Jabatan / Mapel',
-        'Jadwal/Mgg',
-        'Jurnal Terisi',
-        '% Hadir Siswa',
-        'Siswa Dinilai',
-        'Rata Nilai',
-        'Status Kinerja',
-      ];
-      const body = teacherActivityData.summary.map((t) => [
-        t.no,
-        t.nip,
-        t.name,
-        `${t.position} · ${t.subject}`,
-        t.scheduleCount,
-        t.journalCount,
-        t.avgAttendance !== null ? `${t.avgAttendance.toFixed(0)}%` : '-',
-        t.assessedStudents,
-        t.avgGrade !== null ? Number(t.avgGrade.toFixed(1)) : '-',
-        t.kinerja,
-      ]);
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([header, ...body]), 'Kinerja Guru');
-    }
+      if (sheet.reportType === 'teacher_activity') {
+        const header = [
+          'No',
+          'NIP',
+          'Nama Guru',
+          'Jabatan / Mapel',
+          'Jadwal/Mgg',
+          'Jurnal Terisi',
+          '% Hadir Siswa',
+          'Siswa Dinilai',
+          'Rata Nilai',
+          'Status Kinerja',
+        ];
+        const body = teacherActivityData.summary.map((t) => [
+          t.no,
+          t.nip,
+          t.name,
+          `${t.position} · ${t.subject}`,
+          t.scheduleCount,
+          t.journalCount,
+          t.avgAttendance !== null ? `${t.avgAttendance.toFixed(0)}%` : '-',
+          t.assessedStudents,
+          t.avgGrade !== null ? Number(t.avgGrade.toFixed(1)) : '-',
+          t.kinerja,
+        ]);
+        appendUniqueSheet(XLSX.utils.aoa_to_sheet([header, ...body]), 'Kinerja Guru');
+      }
 
-    if (has('charts')) {
-      const header = ['Jenis Grafik', 'Kategori / Label', 'Nilai Utama', 'Keterangan'];
-      const body =
-        chartCards.length === 0
-          ? [['Grafis', 'Belum ada jenis diagram dipilih', '-', '-']]
-          : chartCards.flatMap((c) => c.summaryRows);
-      XLSX.utils.book_append_sheet(
-        wb,
-        XLSX.utils.aoa_to_sheet([header, ...body]),
-        'Ringkasan Grafis'
-      );
-    }
+      if (sheet.reportType === 'charts') {
+        const header = ['Jenis Grafik', 'Kategori / Label', 'Nilai Utama', 'Keterangan'];
+        const body =
+          chartCards.length === 0
+            ? [['Grafis', 'Belum ada jenis diagram dipilih', '-', '-']]
+            : chartCards.flatMap((c) => c.summaryRows);
+        appendUniqueSheet(XLSX.utils.aoa_to_sheet([header, ...body]), 'Ringkasan Grafis');
+      }
+    });
 
     if (wb.SheetNames.length === 0) {
       const ws = XLSX.utils.aoa_to_sheet([['Tidak ada data untuk filter terpilih']]);
@@ -1699,21 +2074,27 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     return wb;
   };
 
-  const handleDownloadXlsx = () => {
-    if (selectedReportTypes.length === 0) {
+  const validateBeforeExport = () => {
+    if (orderedSelectedReportTypes.length === 0) {
       onToast('error', 'Pilih minimal satu jenis laporan terlebih dahulu.');
-      return;
+      return false;
     }
+    if (reportSheets.length === 0) {
+      onToast('error', 'Pilih minimal satu kelas terlebih dahulu.');
+      return false;
+    }
+    return true;
+  };
+
+  const handleDownloadXlsx = () => {
+    if (!validateBeforeExport()) return;
     const wb = buildWorkbook();
     XLSX.writeFile(wb, `Laporan_E-Guru_${reportSlug}_${getTodayISO()}.xlsx`);
     onToast('success', 'Laporan Excel (.xlsx) berhasil diunduh.');
   };
 
   const handleDownloadXls = () => {
-    if (selectedReportTypes.length === 0) {
-      onToast('error', 'Pilih minimal satu jenis laporan terlebih dahulu.');
-      return;
-    }
+    if (!validateBeforeExport()) return;
     const wb = buildWorkbook();
     XLSX.writeFile(wb, `Laporan_E-Guru_${reportSlug}_${getTodayISO()}.xls`, {
       bookType: 'biff8',
@@ -1722,10 +2103,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   };
 
   const handleDownloadWord = async () => {
-    if (selectedReportTypes.length === 0) {
-      onToast('error', 'Pilih minimal satu jenis laporan terlebih dahulu.');
-      return;
-    }
+    if (!validateBeforeExport()) return;
     if (!previewRef.current) return;
     setIsExportingWord(true);
     try {
@@ -1734,6 +2112,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
         title: reportTitle,
         filename: `Laporan_E-Guru_${reportSlug}_${getTodayISO()}.doc`,
         orientation,
+        paperSize: effectivePaperSize,
         cssPageSize: PAPER_SIZE_CONFIG[effectivePaperSize].cssPageSize,
         fontFamily: effectiveFontFamily,
       });
@@ -1745,12 +2124,9 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
     }
   };
 
-  // Vector PDF Generator matching Live Preview 1:1 (including signatures, stamp & signaturePosition)
+  // Vector PDF Generator matching Live Preview 1:1 (per-class order, each report type on a separate page)
   const handleDownloadPdf = async () => {
-    if (selectedReportTypes.length === 0) {
-      onToast('error', 'Pilih minimal satu jenis laporan terlebih dahulu.');
-      return;
-    }
+    if (!validateBeforeExport()) return;
     setIsGeneratingPdf(true);
     try {
       const paperCfg = PAPER_SIZE_CONFIG[effectivePaperSize];
@@ -1769,64 +2145,23 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
       const marginX = 12;
-      let cursorY = 12;
-
-      const [leftLogoPng, rightLogoPng, kepsekSigPng, guruSigPng, stampPng] =
-        await Promise.all([
-          showKop ? imageUrlToPngDataUrl(settings.kopSurat.logoLeft) : Promise.resolve(null),
-          showKop ? imageUrlToPngDataUrl(settings.kopSurat.logoRight) : Promise.resolve(null),
-          showTtdKepsek && showSignatureImage
-            ? imageUrlToPngDataUrl(settings.principalSignatureImage)
-            : Promise.resolve(null),
-          showTtdGuru && showSignatureImage
-            ? imageUrlToPngDataUrl(activeSigner.signatureImage)
-            : Promise.resolve(null),
-          sigPos.showStamp
-            ? imageUrlToPngDataUrl(resolvePrincipalStampImage(db))
-            : Promise.resolve(null),
-        ]);
-
-      if (showKop) {
-        cursorY = drawPdfKopSurat({
-          doc,
-          kop: {
-            ...settings.kopSurat,
-            logoLeftSize: kopLeftSize,
-            logoRightSize: kopRightSize,
-            lineSpacing: kopLineSpacing,
-          },
-          leftLogoPng,
-          rightLogoPng,
-          logoLeftPx: kopLeftSize,
-          logoRightPx: kopRightSize,
-          marginX,
-          startY: cursorY,
-          fallbackFont: pdfFont,
-        });
-      }
-
-      // Title (matching Preview 12pt bold uppercase + underline)
       const usableWidth = pageWidth - marginX * 2;
       const centerX = pageWidth / 2;
-      doc.setFont(pdfFont, 'bold');
-      doc.setFontSize(12);
-      const wrappedTitle = doc.splitTextToSize(reportTitle.toUpperCase(), usableWidth) as string[];
-      wrappedTitle.forEach((line) => {
-        doc.text(line, centerX, cursorY, { align: 'center' });
-        const lineW = doc.getTextWidth(line);
-        doc.setLineWidth(0.35);
-        doc.line(centerX - lineW / 2, cursorY + 1, centerX + lineW / 2, cursorY + 1);
-        cursorY += 5;
-      });
 
-      doc.setFont(pdfFont, 'normal');
-      doc.setFontSize(9);
-      doc.setTextColor(51, 65, 85);
-      doc.text(`${periodSubtitle} · Rentang Tanggal: ${dateRangeLabel}`, centerX, cursorY, {
-        align: 'center',
-      });
-      doc.setTextColor(0, 0, 0);
-      cursorY += 6;
+      const [leftLogoInfo, rightLogoInfo, kepsekSigInfo, guruSigInfo, stampInfo] =
+        await Promise.all([
+          showKop ? imageUrlToPngWithMeta(settings.kopSurat.logoLeft) : Promise.resolve(null),
+          showKop ? imageUrlToPngWithMeta(settings.kopSurat.logoRight) : Promise.resolve(null),
+          showTtdKepsek && showSignatureImage
+            ? imageUrlToPngWithMeta(settings.principalSignatureImage)
+            : Promise.resolve(null),
+          showTtdGuru && showSignatureImage
+            ? imageUrlToPngWithMeta(activeSigner.signatureImage)
+            : Promise.resolve(null),
+          sigPos.showStamp
+            ? imageUrlToPngWithMeta(resolvePrincipalStampImage(db))
+            : Promise.resolve(null),
+        ]);
 
       const commonTableStyles = {
         font: pdfFont,
@@ -1845,70 +2180,186 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
         lineWidth: 0.2,
       };
 
-      const ensureSpace = (minMm = 36) => {
-        if (cursorY > pageHeight - minMm) {
-          doc.addPage();
-          cursorY = 14;
-        }
-      };
+      const PX_TO_MM = 0.264583;
+      const kepsekSigPx = Math.max(
+        16,
+        Math.min(260, sigPos.principalSignatureSize ?? sigPos.signatureSize ?? 60)
+      );
+      const guruSigPx = Math.max(
+        16,
+        Math.min(260, sigPos.teacherSignatureSize ?? sigPos.signatureSize ?? 60)
+      );
+      const stampPx = Math.max(20, Math.min(260, sigPos.stampSize ?? 70));
+      const stampMm = Number((stampPx * PX_TO_MM).toFixed(2));
+      const kepsekSigOffsetX = sigPos.principalSigOffsetX ?? 0;
+      const kepsekSigOffsetY = sigPos.principalSigOffsetY ?? 0;
+      const guruSigOffsetX = sigPos.teacherSigOffsetX ?? 0;
+      const guruSigOffsetY = sigPos.teacherSigOffsetY ?? 0;
+      const stampOffsetX = sigPos.stampOffsetX ?? 0;
+      const stampOffsetY = sigPos.stampOffsetY ?? 0;
 
-      const drawSectionTitle = (label: string) => {
-        ensureSpace(36);
-        doc.setFont(pdfFont, 'bold');
-        doc.setFontSize(10);
+      const drawPdfSigBlock = (
+        xMm: number,
+        yMm: number,
+        topLabel: string,
+        roleTitle: string,
+        personName: string,
+        personNip: string,
+        sigInfo: PngImageInfo | null,
+        withStamp: boolean,
+        sigPx: number,
+        sigOffsetX: number,
+        sigOffsetY: number
+      ) => {
+        const sigBoxH = Number((sigPx * PX_TO_MM).toFixed(2));
+        const sigMaxW = Number((sigBoxH * 2.85).toFixed(2));
+        doc.setFont(pdfFont, 'normal');
+        doc.setFontSize(9.5);
         doc.setTextColor(0, 0, 0);
-        doc.text(label, marginX, cursorY);
-        cursorY += 2.6;
+        doc.text(topLabel, xMm, yMm);
+        doc.text(roleTitle, xMm, yMm + 4.5);
+        if (withStamp && stampInfo) {
+          const fittedStamp = fitContainDimensions(stampInfo.width, stampInfo.height, stampMm, stampMm);
+          const stampCenterX = xMm + 4.8 + stampOffsetX * PX_TO_MM;
+          const stampCenterY = yMm + 16 + stampOffsetY * PX_TO_MM;
+          doc.addImage(
+            stampInfo.dataUrl,
+            'PNG',
+            stampCenterX - fittedStamp.width / 2,
+            stampCenterY - fittedStamp.height / 2,
+            fittedStamp.width,
+            fittedStamp.height
+          );
+        }
+        if (sigInfo) {
+          const fittedSig = fitContainDimensions(sigInfo.width, sigInfo.height, sigMaxW, sigBoxH);
+          doc.addImage(
+            sigInfo.dataUrl,
+            'PNG',
+            xMm + sigOffsetX * PX_TO_MM,
+            yMm + 15 - fittedSig.height / 2 + sigOffsetY * PX_TO_MM,
+            fittedSig.width,
+            fittedSig.height
+          );
+        }
+        doc.setFont(pdfFont, 'bold');
+        doc.text(personName, xMm, yMm + 25.5);
+        const nameW = doc.getTextWidth(personName);
+        doc.setLineWidth(0.25);
+        doc.line(xMm, yMm + 26.2, xMm + nameW, yMm + 26.2);
+        doc.setFont(pdfFont, 'normal');
+        doc.text(`NIP. ${personNip || '-'}`, xMm, yMm + 30);
       };
 
-      const has = (id: ReportSectionId) => selectedReportTypes.includes(id);
-
-      if (has('journal')) {
-        if (selectedReportTypes.length > 1) {
-          drawSectionTitle('Jurnal Mengajar (Mengajar) — Catatan Materi, Jam & Kegiatan KBM');
+      reportSheets.forEach((sheet, sheetIdx) => {
+        if (sheetIdx > 0) {
+          doc.addPage();
         }
-        autoTable(doc, {
-          startY: cursorY,
-          margin: { left: marginX, right: marginX },
-          styles: commonTableStyles,
-          headStyles: commonHeadStyles,
-          head: [
-            [
-              'No',
-              'Tanggal',
-              'Jam',
-              'Kelas',
-              'Mata Pelajaran',
-              'Materi Pokok',
-              'Kegiatan Pembelajaran',
-              'H/S/I/A/D',
-            ],
-          ],
-          body:
-            filteredJournals.length === 0
-              ? [['-', '-', '-', '-', '-', 'Belum ada data jurnal pada filter ini', '-', '-']]
-              : filteredJournals.map((j, idx) => {
-                  const sum = summarizeJournalRow(j);
-                  return [
-                    idx + 1,
-                    formatShortDateId(j.date),
-                    j.jamKe,
-                    j.className,
-                    j.subject,
-                    j.topic,
-                    j.activity,
-                    `${sum.counts.H}/${sum.counts.S}/${sum.counts.I}/${sum.counts.A}/${sum.counts.D}`,
-                  ];
-                }),
-        });
-        cursorY =
-          (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
-      }
+        let cursorY = 12;
 
-      if (has('attendance')) {
-        selectedClasses.forEach((cls) => {
+        const ensureSpace = (minMm = 36) => {
+          if (cursorY > pageHeight - minMm) {
+            doc.addPage();
+            cursorY = 14;
+          }
+        };
+
+        const drawSectionTitle = (label: string) => {
+          ensureSpace(36);
+          doc.setFont(pdfFont, 'bold');
+          doc.setFontSize(10);
+          doc.setTextColor(0, 0, 0);
+          doc.text(label, marginX, cursorY);
+          cursorY += 2.6;
+        };
+
+        if (showKop) {
+          cursorY = drawPdfKopSurat({
+            doc,
+            kop: {
+              ...settings.kopSurat,
+              logoLeftSize: kopLeftSize,
+              logoRightSize: kopRightSize,
+              lineSpacing: kopLineSpacing,
+            },
+            leftLogoPng: leftLogoInfo,
+            rightLogoPng: rightLogoInfo,
+            logoLeftPx: kopLeftSize,
+            logoRightPx: kopRightSize,
+            marginX,
+            startY: cursorY,
+            fallbackFont: pdfFont,
+          });
+        }
+
+        // Sheet Title (matching Preview 12pt bold uppercase + underline)
+        doc.setFont(pdfFont, 'bold');
+        doc.setFontSize(12);
+        const wrappedTitle = doc.splitTextToSize(sheet.officialTitle.toUpperCase(), usableWidth) as string[];
+        wrappedTitle.forEach((line) => {
+          doc.text(line, centerX, cursorY, { align: 'center' });
+          const lineW = doc.getTextWidth(line);
+          doc.setLineWidth(0.35);
+          doc.line(centerX - lineW / 2, cursorY + 1, centerX + lineW / 2, cursorY + 1);
+          cursorY += 5.5;
+        });
+
+        doc.setFont(pdfFont, 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(51, 65, 85);
+        const wrappedSub = doc.splitTextToSize(sheet.subtitle, usableWidth) as string[];
+        wrappedSub.forEach((line) => {
+          doc.text(line, centerX, cursorY, { align: 'center' });
+          cursorY += 4.2;
+        });
+        doc.setTextColor(0, 0, 0);
+        cursorY += 2;
+
+        const cls = sheet.className;
+
+        if (sheet.reportType === 'journal' && cls) {
+          const classJournals = filteredJournals.filter((j) => j.className === cls);
+          autoTable(doc, {
+            startY: cursorY,
+            margin: { left: marginX, right: marginX },
+            styles: commonTableStyles,
+            headStyles: commonHeadStyles,
+            head: [
+              [
+                'No',
+                'Tanggal',
+                'Jam',
+                'Kelas',
+                'Mata Pelajaran',
+                'Materi Pokok',
+                'Kegiatan Pembelajaran',
+                'H/S/I/A/D',
+              ],
+            ],
+            body:
+              classJournals.length === 0
+                ? [['-', '-', '-', cls, '-', `Belum ada data jurnal untuk kelas ${cls}`, '-', '-']]
+                : classJournals.map((j, idx) => {
+                    const sum = summarizeJournalRow(j);
+                    return [
+                      idx + 1,
+                      formatShortDateId(j.date),
+                      j.jamKe,
+                      j.className,
+                      j.subject,
+                      j.topic,
+                      j.activity,
+                      `${sum.counts.H}/${sum.counts.S}/${sum.counts.I}/${sum.counts.A}/${sum.counts.D}`,
+                    ];
+                  }),
+          });
+          cursorY =
+            (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
+        }
+
+        if (sheet.reportType === 'attendance' && cls) {
           const { classStudents, classJournals } = getAttendanceBlockForClass(cls);
-          drawSectionTitle(`Kehadiran Mendatar — Kelas ${cls}`);
+          drawSectionTitle(`Leger Kehadiran Mendatar — Kelas ${cls}`);
           autoTable(doc, {
             startY: cursorY,
             margin: { left: marginX, right: marginX },
@@ -1918,6 +2369,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
               [
                 'No',
                 'NIS',
+                'NISN',
                 'Nama Siswa',
                 ...classJournals.map((j) => formatCompactDateId(j.date)),
                 'H',
@@ -1930,7 +2382,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             ],
             body:
               classStudents.length === 0
-                ? [['-', '-', 'Belum ada siswa di kelas ini']]
+                ? [['-', '-', '-', 'Belum ada siswa di kelas ini']]
                 : classStudents.map((st, idx) => {
                     const counts: Record<AttendanceStatus, number> = {
                       H: 0,
@@ -1951,6 +2403,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                     return [
                       idx + 1,
                       st.nis,
+                      st.nisn || '-',
                       st.name,
                       ...cells,
                       counts.H,
@@ -1964,11 +2417,9 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           });
           cursorY =
             (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
-        });
-      }
+        }
 
-      if (has('attendance_monthly')) {
-        selectedClasses.forEach((cls) => {
+        if (sheet.reportType === 'attendance_monthly' && cls) {
           const { months, rows } = getMonthlyAttendanceForClass(cls);
           drawSectionTitle(`Rekap Presensi Bulanan — Kelas ${cls}`);
           autoTable(doc, {
@@ -1980,6 +2431,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
               [
                 'No',
                 'NIS',
+                'NISN',
                 'Nama Siswa',
                 ...months.map((m) => formatMonthLabelId(m)),
                 'Pertemuan',
@@ -1993,10 +2445,11 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             ],
             body:
               rows.length === 0
-                ? [['-', '-', 'Belum ada siswa di kelas ini']]
+                ? [['-', '-', '-', 'Belum ada siswa di kelas ini']]
                 : rows.map((r) => [
                     r.no,
                     r.nis,
+                    r.nisn,
                     r.name,
                     ...months.map((m) => {
                       const mc = r.monthCounts[m];
@@ -2013,142 +2466,171 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           });
           cursorY =
             (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
-        });
-      }
+        }
 
-      if (has('attendance_monitoring')) {
-        drawSectionTitle('Monitoring Ketidakhadiran (S/I/A/D) — Rekap Siswa');
-        autoTable(doc, {
-          startY: cursorY,
-          margin: { left: marginX, right: marginX },
-          styles: commonTableStyles,
-          headStyles: commonHeadStyles,
-          head: [['No', 'NIS', 'Nama Siswa', 'Kelas', 'S', 'I', 'A', 'D', 'Total', 'Pembinaan']],
-          body:
-            monitoringAbsenceData.summary.length === 0
-              ? [['-', '-', 'Seluruh siswa hadir 100% pada periode ini', '-', 0, 0, 0, 0, 0, '-']]
-              : monitoringAbsenceData.summary.map((it, idx) => [
-                  idx + 1,
-                  it.nis,
-                  it.name,
-                  it.className,
-                  it.S,
-                  it.I,
-                  it.A,
-                  it.D,
-                  it.total,
-                  it.action,
-                ]),
-        });
-        cursorY =
-          (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 6;
+        if (sheet.reportType === 'attendance_monitoring' && cls) {
+          const clsMonitoring = getMonitoringAbsenceForClass(cls);
+          drawSectionTitle(`Monitoring Ketidakhadiran (S/I/A/D) — Rekap Siswa Kelas ${cls}`);
+          autoTable(doc, {
+            startY: cursorY,
+            margin: { left: marginX, right: marginX },
+            styles: commonTableStyles,
+            headStyles: commonHeadStyles,
+            head: [['No', 'NIS', 'Nama Siswa', 'Kelas', 'S', 'I', 'A', 'D', 'Total', 'Pembinaan']],
+            body:
+              clsMonitoring.summary.length === 0
+                ? [['-', '-', `Seluruh siswa kelas ${cls} hadir 100% pada periode ini`, cls, 0, 0, 0, 0, 0, '-']]
+                : clsMonitoring.summary.map((it, idx) => [
+                    idx + 1,
+                    it.nis,
+                    it.name,
+                    it.className,
+                    it.S,
+                    it.I,
+                    it.A,
+                    it.D,
+                    it.total,
+                    it.action,
+                  ]),
+          });
+          cursorY =
+            (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 6;
 
-        drawSectionTitle('Kronologi Ketidakhadiran (S/I/A/D)');
-        autoTable(doc, {
-          startY: cursorY,
-          margin: { left: marginX, right: marginX },
-          styles: commonTableStyles,
-          headStyles: commonHeadStyles,
-          head: [['No', 'Tanggal', 'Jam', 'Kelas', 'Mapel', 'Nama Siswa', 'Status', 'Keterangan']],
-          body:
-            monitoringAbsenceData.chronology.length === 0
-              ? [['-', '-', '-', '-', '-', 'Belum ada catatan ketidakhadiran', '-', '-']]
-              : monitoringAbsenceData.chronology.map((c, idx) => [
-                  idx + 1,
-                  formatShortDateId(c.date),
-                  c.jamKe,
-                  c.className,
-                  c.subject,
-                  c.studentName,
-                  c.status,
-                  c.note,
-                ]),
-        });
-        cursorY =
-          (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
-      }
+          drawSectionTitle(`Kronologi Ketidakhadiran (S/I/A/D) — Kelas ${cls}`);
+          autoTable(doc, {
+            startY: cursorY,
+            margin: { left: marginX, right: marginX },
+            styles: commonTableStyles,
+            headStyles: commonHeadStyles,
+            head: [['No', 'Tanggal', 'Jam', 'Kelas', 'Mapel', 'Nama Siswa', 'Status', 'Keterangan']],
+            body:
+              clsMonitoring.chronology.length === 0
+                ? [['-', '-', '-', cls, '-', `Belum ada catatan ketidakhadiran di kelas ${cls}`, '-', '-']]
+                : clsMonitoring.chronology.map((c, idx) => [
+                    idx + 1,
+                    formatShortDateId(c.date),
+                    c.jamKe,
+                    c.className,
+                    c.subject,
+                    c.studentName,
+                    c.status,
+                    c.note,
+                  ]),
+          });
+          cursorY =
+            (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
+        }
 
-      if (has('grades')) {
-        selectedClasses.forEach((cls) => {
-          activeGradeSubjects.forEach((subj) => {
+        if (sheet.reportType === 'grades' && cls) {
+          const classGradeSubjects = getSubjectsForClassSheet(cls);
+          const visibleSubjects = classGradeSubjects.filter((subj) => {
             const { rows } = getGradeBlockForClassAndSubject(cls, subj);
-            const hasAnyScore = rows.some((r) => r.avg !== null);
-            if (!hasAnyScore && (!subjectFilter || subjectFilter === 'ALL')) return;
-
-            drawSectionTitle(`Rekap Nilai Mapel — Kelas ${cls} (${subj})`);
-            autoTable(doc, {
-              startY: cursorY,
-              margin: { left: marginX, right: marginX },
-              styles: commonTableStyles,
-              headStyles: commonHeadStyles,
-              head: [['No', 'NIS', 'Nama Siswa', ...settings.masterExamTypes, 'Rata-rata', 'Status']],
-              body: rows.map((r) => [
-                r.no,
-                r.nis,
-                r.name,
-                ...settings.masterExamTypes.map((ex) =>
-                  r.scores[ex] !== null ? String(r.scores[ex]) : '-'
-                ),
-                r.avg !== null ? r.avg.toFixed(1) : '-',
-                r.status,
-              ]),
-            });
-            cursorY =
-              (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
+            return rows.some((r) => r.avg !== null) || classGradeSubjects.length === 1;
           });
-        });
-      }
-
-      if (has('grades_remedial')) {
-        selectedClasses.forEach((cls) => {
-          activeGradeSubjects.forEach((subj) => {
-            const rem = getRemedialDataForClassAndSubject(cls, subj);
-            if (rem.assessedCount === 0 && (!subjectFilter || subjectFilter === 'ALL')) return;
-            const dayaLabel = rem.dayaSerap !== null ? `${rem.dayaSerap.toFixed(0)}%` : '-';
-            drawSectionTitle(
-              `Ketuntasan & Remedial (< KKM 75) — ${cls} (${subj}) · Daya Serap: ${dayaLabel} (${rem.tuntasCount}/${rem.assessedCount})`
+          if (visibleSubjects.length === 0) {
+            doc.setFont(pdfFont, 'normal');
+            doc.setFontSize(9);
+            doc.text(
+              `Belum ada nilai tercatat untuk kelas ${cls} pada mata pelajaran terpilih.`,
+              marginX,
+              cursorY + 4
             );
-            autoTable(doc, {
-              startY: cursorY,
-              margin: { left: marginX, right: marginX },
-              styles: commonTableStyles,
-              headStyles: commonHeadStyles,
-              head: [
-                [
-                  'No',
-                  'NIS',
-                  'Nama Siswa',
-                  'Max',
-                  'Min',
-                  'Komponen < KKM',
-                  'Rata-rata',
-                  'Selisih',
-                  'Rekomendasi',
-                ],
-              ],
-              body:
-                rem.remedialList.length === 0
-                  ? [['-', '-', 'Seluruh siswa yang dinilai sudah tuntas (>= KKM 75)', '-', '-', '-', '-', '-', '-']]
-                  : rem.remedialList.map((r) => [
-                      r.no,
-                      r.nis,
-                      r.name,
-                      r.maxScore,
-                      r.minScore,
-                      r.belowItems,
-                      r.avg.toFixed(1),
-                      `-${r.gap.toFixed(1)}`,
-                      r.rekomendasi,
-                    ]),
+            cursorY += 12;
+          } else {
+            visibleSubjects.forEach((subj) => {
+              const { rows } = getGradeBlockForClassAndSubject(cls, subj);
+              drawSectionTitle(`Rekap Nilai Mapel — Kelas ${cls} (${subj})`);
+              autoTable(doc, {
+                startY: cursorY,
+                margin: { left: marginX, right: marginX },
+                styles: commonTableStyles,
+                headStyles: commonHeadStyles,
+                head: [['No', 'NIS', 'NISN', 'Nama Siswa', ...settings.masterExamTypes, 'Rata-rata', 'Status']],
+                body:
+                  rows.length === 0
+                    ? [['-', '-', '-', `Belum ada siswa di kelas ${cls}`]]
+                    : rows.map((r) => [
+                        r.no,
+                        r.nis,
+                        r.nisn,
+                        r.name,
+                        ...settings.masterExamTypes.map((ex) =>
+                          r.scores[ex] !== null ? String(r.scores[ex]) : '-'
+                        ),
+                        r.avg !== null ? r.avg.toFixed(1) : '-',
+                        r.status,
+                      ]),
+              });
+              cursorY =
+                (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
             });
-            cursorY =
-              (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
-          });
-        });
-      }
+          }
+        }
 
-      if (has('grades_leger')) {
-        selectedClasses.forEach((cls) => {
+        if (sheet.reportType === 'grades_remedial' && cls) {
+          const classGradeSubjects = getSubjectsForClassSheet(cls);
+          const visibleSubjects = classGradeSubjects.filter((subj) => {
+            const rem = getRemedialDataForClassAndSubject(cls, subj);
+            return rem.assessedCount > 0 || classGradeSubjects.length === 1;
+          });
+          if (visibleSubjects.length === 0) {
+            doc.setFont(pdfFont, 'normal');
+            doc.setFontSize(9);
+            doc.text(
+              `Belum ada data ketuntasan & remedial untuk kelas ${cls} pada mata pelajaran terpilih.`,
+              marginX,
+              cursorY + 4
+            );
+            cursorY += 12;
+          } else {
+            visibleSubjects.forEach((subj) => {
+              const rem = getRemedialDataForClassAndSubject(cls, subj);
+              const dayaLabel = rem.dayaSerap !== null ? `${rem.dayaSerap.toFixed(0)}%` : '-';
+              drawSectionTitle(
+                `Ketuntasan & Remedial (< KKM 75) — ${cls} (${subj}) · Daya Serap: ${dayaLabel} (${rem.tuntasCount}/${rem.assessedCount})`
+              );
+              autoTable(doc, {
+                startY: cursorY,
+                margin: { left: marginX, right: marginX },
+                styles: commonTableStyles,
+                headStyles: commonHeadStyles,
+                head: [
+                  [
+                    'No',
+                    'NIS',
+                    'Nama Siswa',
+                    'Max',
+                    'Min',
+                    'Komponen < KKM',
+                    'Rata-rata',
+                    'Selisih',
+                    'Rekomendasi',
+                  ],
+                ],
+                body:
+                  rem.assessedCount === 0
+                    ? [['-', '-', `Belum ada nilai tercatat untuk kelas ${cls} (${subj})`, '-', '-', '-', '-', '-', '-']]
+                    : rem.remedialList.length === 0
+                    ? [['-', '-', 'Seluruh siswa yang dinilai sudah tuntas (>= KKM 75)', '-', '-', '-', '-', '-', '-']]
+                    : rem.remedialList.map((r) => [
+                        r.no,
+                        r.nis,
+                        r.name,
+                        r.maxScore,
+                        r.minScore,
+                        r.belowItems,
+                        r.avg.toFixed(1),
+                        `-${r.gap.toFixed(1)}`,
+                        r.rekomendasi,
+                      ]),
+              });
+              cursorY =
+                (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
+            });
+          }
+        }
+
+        if (sheet.reportType === 'grades_leger' && cls) {
           const { subjects, rows } = getCombinedLegerForClass(cls);
           drawSectionTitle(`Leger Gabungan Kelas & Peringkat — Kelas ${cls}`);
           autoTable(doc, {
@@ -2174,309 +2656,243 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           });
           cursorY =
             (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
-        });
-      }
+        }
 
-      if (has('students_roster')) {
-        drawSectionTitle(`Daftar Peserta Didik & Wali Kelas (${studentRosterRows.length} Siswa)`);
-        autoTable(doc, {
-          startY: cursorY,
-          margin: { left: marginX, right: marginX },
-          styles: { ...commonTableStyles, fontSize: 7.5 },
-          headStyles: commonHeadStyles,
-          head: [
-            [
-              'No',
-              'NIS / NISN',
-              'Nama Siswa',
-              'L/P',
-              'Kelas',
-              'Abs',
-              'TTL',
-              'No. HP',
-              'Wali Kelas',
-              'Guru BK',
-              'Status',
+        if (sheet.reportType === 'students_roster' && cls) {
+          const clsStudents = studentRosterRows.filter((s) => s.className === cls);
+          drawSectionTitle(`Daftar Peserta Didik & Wali Kelas — Kelas ${cls} (${clsStudents.length} Siswa)`);
+          autoTable(doc, {
+            startY: cursorY,
+            margin: { left: marginX, right: marginX },
+            styles: { ...commonTableStyles, fontSize: 7.5 },
+            headStyles: commonHeadStyles,
+            head: [
+              [
+                'No',
+                'NIS / NISN',
+                'Nama Siswa',
+                'L/P',
+                'Kelas',
+                'Abs',
+                'TTL',
+                'No. HP',
+                'Wali Kelas',
+                'Guru BK',
+                'Status',
+              ],
             ],
-          ],
-          body:
-            studentRosterRows.length === 0
-              ? [['-', '-', 'Belum ada data peserta didik pada kelas terpilih']]
-              : studentRosterRows.map((st, idx) => [
-                  idx + 1,
-                  `${st.nis} / ${st.nisn || '-'}`,
-                  st.name,
-                  st.gender,
-                  st.className,
-                  st.absentNo || '-',
-                  `${st.birthPlace || '-'}, ${st.birthDate || '-'}`,
-                  st.phone || '-',
-                  st.homeroomTeacher || '-',
-                  st.counselorTeacher || '-',
-                  st.status,
-                ]),
-        });
-        cursorY =
-          (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
-      }
+            body:
+              clsStudents.length === 0
+                ? [['-', '-', `Belum ada data peserta didik di kelas ${cls}`]]
+                : clsStudents.map((st, idx) => [
+                    idx + 1,
+                    `${st.nis} / ${st.nisn || '-'}`,
+                    st.name,
+                    st.gender,
+                    st.className,
+                    st.absentNo || '-',
+                    `${st.birthPlace || '-'}, ${st.birthDate || '-'}`,
+                    st.phone || '-',
+                    st.homeroomTeacher || '-',
+                    st.counselorTeacher || '-',
+                    st.status,
+                  ]),
+          });
+          cursorY =
+            (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
+        }
 
-      if (has('teacher_activity')) {
-        drawSectionTitle('Aktivitas & Penilaian Kinerja Guru — Ringkasan');
-        autoTable(doc, {
-          startY: cursorY,
-          margin: { left: marginX, right: marginX },
-          styles: commonTableStyles,
-          headStyles: commonHeadStyles,
-          head: [
-            [
-              'No',
-              'NIP',
-              'Nama Guru',
-              'Jabatan / Mapel',
-              'Jadwal',
-              'Jurnal',
-              '% Hadir',
-              'Dinilai',
-              'Rata Nilai',
-              'Kinerja',
+        if (sheet.reportType === 'teacher_activity') {
+          drawSectionTitle('Aktivitas & Penilaian Kinerja Guru — Ringkasan');
+          autoTable(doc, {
+            startY: cursorY,
+            margin: { left: marginX, right: marginX },
+            styles: commonTableStyles,
+            headStyles: commonHeadStyles,
+            head: [
+              [
+                'No',
+                'NIP',
+                'Nama Guru',
+                'Jabatan / Mapel',
+                'Jadwal',
+                'Jurnal',
+                '% Hadir',
+                'Dinilai',
+                'Rata Nilai',
+                'Kinerja',
+              ],
             ],
-          ],
-          body: teacherActivityData.summary.map((t) => [
-            t.no,
-            t.nip,
-            t.name,
-            `${t.position} (${t.subject})`,
-            t.scheduleCount,
-            t.journalCount,
-            t.avgAttendance !== null ? `${t.avgAttendance.toFixed(0)}%` : '-',
-            t.assessedStudents,
-            t.avgGrade !== null ? t.avgGrade.toFixed(1) : '-',
-            t.kinerja,
-          ]),
-        });
-        cursorY =
-          (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 6;
+            body: teacherActivityData.summary.map((t) => [
+              t.no,
+              t.nip,
+              t.name,
+              `${t.position} (${t.subject})`,
+              t.scheduleCount,
+              t.journalCount,
+              t.avgAttendance !== null ? `${t.avgAttendance.toFixed(0)}%` : '-',
+              t.assessedStudents,
+              t.avgGrade !== null ? t.avgGrade.toFixed(1) : '-',
+              t.kinerja,
+            ]),
+          });
+          cursorY =
+            (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 6;
 
-        drawSectionTitle('Riwayat Pelaksanaan KBM Terbaru');
-        autoTable(doc, {
-          startY: cursorY,
-          margin: { left: marginX, right: marginX },
-          styles: commonTableStyles,
-          headStyles: commonHeadStyles,
-          head: [['No', 'Tanggal', 'Jam', 'Kelas', 'Mata Pelajaran', 'Materi Pokok', '% Hadir']],
-          body:
-            teacherActivityData.recentKbm.length === 0
-              ? [['-', '-', '-', '-', '-', 'Belum ada riwayat KBM pada periode filter ini', '-']]
-              : teacherActivityData.recentKbm.map((r) => [
-                  r.no,
-                  formatShortDateId(r.date),
-                  r.jamKe,
-                  r.className,
-                  r.subject,
-                  r.topic,
-                  `${r.pct.toFixed(0)}%`,
-                ]),
-        });
-        cursorY =
-          (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
-      }
+          drawSectionTitle('Riwayat Pelaksanaan KBM Terbaru');
+          autoTable(doc, {
+            startY: cursorY,
+            margin: { left: marginX, right: marginX },
+            styles: commonTableStyles,
+            headStyles: commonHeadStyles,
+            head: [['No', 'Tanggal', 'Jam', 'Kelas', 'Mata Pelajaran', 'Materi Pokok', '% Hadir']],
+            body:
+              teacherActivityData.recentKbm.length === 0
+                ? [['-', '-', '-', '-', '-', 'Belum ada riwayat KBM pada periode filter ini', '-']]
+                : teacherActivityData.recentKbm.map((r) => [
+                    r.no,
+                    formatShortDateId(r.date),
+                    r.jamKe,
+                    r.className,
+                    r.subject,
+                    r.topic,
+                    `${r.pct.toFixed(0)}%`,
+                  ]),
+          });
+          cursorY =
+            (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
+        }
 
-      if (has('charts')) {
-        drawSectionTitle('Laporan Grafis & Diagram Analisis KBM');
-        if (chartCards.length === 0) {
-          doc.setFont(pdfFont, 'normal');
-          doc.setFontSize(9);
-          doc.text('Belum ada jenis diagram grafik yang dipilih.', marginX, cursorY + 4);
-          cursorY += 10;
-        } else {
-          const cols = effectivePaperSize === 'A5' && orientation === 'portrait' ? 1 : 2;
-          const gapMm = 4;
-          const cardW = (usableWidth - gapMm * (cols - 1)) / cols;
-          const imgW = cardW - 5;
+        if (sheet.reportType === 'charts') {
+          drawSectionTitle('Laporan Grafis & Diagram Analisis KBM');
+          if (chartCards.length === 0) {
+            doc.setFont(pdfFont, 'normal');
+            doc.setFontSize(9);
+            doc.text('Belum ada jenis diagram grafik yang dipilih.', marginX, cursorY + 4);
+            cursorY += 10;
+          } else {
+            const cols = effectivePaperSize === 'A5' && orientation === 'portrait' ? 1 : 2;
+            const gapMm = 4;
+            const cardW = (usableWidth - gapMm * (cols - 1)) / cols;
+            const imgW = cardW - 5;
 
-          for (let i = 0; i < chartCards.length; i += cols) {
-            const rowCards = chartCards.slice(i, i + cols);
-            const imgH = imgW * (rowCards[0].heightPx / rowCards[0].widthPx);
-            const cardH = 12.5 + imgH;
-            ensureSpace(cardH + 4);
+            for (let i = 0; i < chartCards.length; i += cols) {
+              const rowCards = chartCards.slice(i, i + cols);
+              const rowMaxCardH = Math.max(
+                ...rowCards.map((c) => 12.5 + imgW * (c.heightPx / c.widthPx))
+              );
+              ensureSpace(rowMaxCardH + 4);
 
-            rowCards.forEach((card, cIdx) => {
-              const cardX = marginX + cIdx * (cardW + gapMm);
-              const cardY = cursorY;
-              doc.setDrawColor(0, 0, 0);
-              doc.setLineWidth(0.25);
-              doc.setFillColor(255, 255, 255);
-              doc.rect(cardX, cardY, cardW, cardH, 'FD');
+              rowCards.forEach((card, cIdx) => {
+                const cardX = marginX + cIdx * (cardW + gapMm);
+                const cardY = cursorY;
+                const cardImgH = imgW * (card.heightPx / card.widthPx);
+                doc.setDrawColor(0, 0, 0);
+                doc.setLineWidth(0.25);
+                doc.setFillColor(255, 255, 255);
+                doc.rect(cardX, cardY, cardW, rowMaxCardH, 'FD');
 
-              doc.setFont(pdfFont, 'bold');
-              doc.setFontSize(8.5);
-              doc.setTextColor(0, 0, 0);
-              doc.text(card.title, cardX + 2.5, cardY + 4.5, { maxWidth: cardW - 5 });
+                doc.setFont(pdfFont, 'bold');
+                doc.setFontSize(8.5);
+                doc.setTextColor(0, 0, 0);
+                doc.text(card.title, cardX + 2.5, cardY + 4.5, { maxWidth: cardW - 5 });
 
-              doc.setFont(pdfFont, 'normal');
-              doc.setFontSize(7);
-              doc.setTextColor(71, 85, 105);
-              doc.text(`${card.chartKind} · ${card.subtitle}`, cardX + 2.5, cardY + 8.5, {
-                maxWidth: cardW - 5,
+                doc.setFont(pdfFont, 'normal');
+                doc.setFontSize(7);
+                doc.setTextColor(71, 85, 105);
+                doc.text(`${card.chartKind} · ${card.subtitle}`, cardX + 2.5, cardY + 8.5, {
+                  maxWidth: cardW - 5,
+                });
+                doc.setTextColor(0, 0, 0);
+
+                if (card.pngDataUrl) {
+                  doc.addImage(card.pngDataUrl, 'PNG', cardX + 2.5, cardY + 10.2, imgW, cardImgH);
+                }
               });
-              doc.setTextColor(0, 0, 0);
 
-              if (card.pngDataUrl) {
-                doc.addImage(card.pngDataUrl, 'PNG', cardX + 2.5, cardY + 10.2, imgW, imgH);
-              }
-            });
-
-            cursorY += cardH + 4.5;
+              cursorY += rowMaxCardH + 4.5;
+            }
+            cursorY += 3;
           }
-          cursorY += 3;
         }
-      }
 
-      // Signature Block matching Preview & sigPos 1:1
-      if (showTtdKepsek || showTtdGuru) {
-        const PX_TO_MM = 0.264583;
-        const kepsekSigPx = Math.max(
-          16,
-          Math.min(260, sigPos.principalSignatureSize ?? sigPos.signatureSize ?? 60)
-        );
-        const guruSigPx = Math.max(
-          16,
-          Math.min(260, sigPos.teacherSignatureSize ?? sigPos.signatureSize ?? 60)
-        );
-        const stampPx = Math.max(20, Math.min(260, sigPos.stampSize ?? 70));
-        const stampMm = Number((stampPx * PX_TO_MM).toFixed(2));
-        const kepsekSigOffsetX = sigPos.principalSigOffsetX ?? 0;
-        const kepsekSigOffsetY = sigPos.principalSigOffsetY ?? 0;
-        const guruSigOffsetX = sigPos.teacherSigOffsetX ?? 0;
-        const guruSigOffsetY = sigPos.teacherSigOffsetY ?? 0;
-        const stampOffsetX = sigPos.stampOffsetX ?? 0;
-        const stampOffsetY = sigPos.stampOffsetY ?? 0;
+        // Signature Block matching Preview & sigPos 1:1 on each sheet
+        if (showTtdKepsek || showTtdGuru) {
+          const neededH =
+            sigPos.preset === 'kiri' || sigPos.preset === 'kanan'
+              ? 76
+              : sigPos.preset === 'bebas'
+              ? Math.max(48, Math.max(sigPos.principalY, sigPos.teacherY) * PX_TO_MM + 38)
+              : 48;
+          if (cursorY > pageHeight - neededH) {
+            doc.addPage();
+            cursorY = 14;
+          }
+          const sigBaseY = cursorY + 4;
+          const maxSigX = pageWidth - marginX - 50;
 
-        const neededH =
-          sigPos.preset === 'kiri' || sigPos.preset === 'kanan'
-            ? 76
-            : sigPos.preset === 'bebas'
-            ? Math.max(48, Math.max(sigPos.principalY, sigPos.teacherY) * PX_TO_MM + 38)
-            : 48;
-        if (cursorY > pageHeight - neededH) {
-          doc.addPage();
-          cursorY = 14;
-        }
-        const sigBaseY = cursorY + 4;
-        const maxSigX = pageWidth - marginX - 50;
+          const stampOnKepsek = sigPos.showStamp;
+          const stampOnGuru = false;
 
-        const drawPdfSigBlock = (
-          xMm: number,
-          yMm: number,
-          topLabel: string,
-          roleTitle: string,
-          personName: string,
-          personNip: string,
-          sigPng: string | null,
-          withStamp: boolean,
-          sigPx: number,
-          sigOffsetX: number,
-          sigOffsetY: number
-        ) => {
-          const sigH = Number((sigPx * PX_TO_MM).toFixed(2));
-          const sigW = Number((sigH * 2.38).toFixed(2));
-          doc.setFont(pdfFont, 'normal');
-          doc.setFontSize(9.5);
-          doc.setTextColor(0, 0, 0);
-          doc.text(topLabel, xMm, yMm);
-          doc.text(roleTitle, xMm, yMm + 4.5);
-          if (withStamp && stampPng) {
-            const stampCenterX = xMm + 4.8 + stampOffsetX * PX_TO_MM;
-            const stampCenterY = yMm + 16 + stampOffsetY * PX_TO_MM;
-            doc.addImage(
-              stampPng,
-              'PNG',
-              stampCenterX - stampMm / 2,
-              stampCenterY - stampMm / 2,
-              stampMm,
-              stampMm
+          let kepsekX = marginX + 4.5;
+          let kepsekY = sigBaseY;
+          let guruX = marginX + usableWidth * 0.59;
+          let guruY = sigBaseY;
+
+          if (sigPos.preset === 'kanan-kiri') {
+            guruX = marginX + 4.5;
+            kepsekX = marginX + usableWidth * 0.59;
+          } else if (sigPos.preset === 'kiri') {
+            kepsekX = marginX + 4.5;
+            guruX = marginX + 4.5;
+            guruY = sigBaseY + 36;
+          } else if (sigPos.preset === 'tengah') {
+            kepsekX = pageWidth / 2 - 58;
+            guruX = pageWidth / 2 + 12;
+          } else if (sigPos.preset === 'kanan') {
+            kepsekX = pageWidth - marginX - 63.5;
+            guruX = pageWidth - marginX - 63.5;
+            guruY = sigBaseY + 36;
+          } else if (sigPos.preset === 'bebas') {
+            kepsekX = Math.min(maxSigX, marginX + (usableWidth * sigPos.principalX) / 100);
+            kepsekY = sigBaseY + sigPos.principalY * PX_TO_MM;
+            guruX = Math.min(maxSigX, marginX + (usableWidth * sigPos.teacherX) / 100);
+            guruY = sigBaseY + sigPos.teacherY * PX_TO_MM;
+          }
+
+          if (showTtdKepsek) {
+            drawPdfSigBlock(
+              kepsekX,
+              kepsekY,
+              'Mengetahui,',
+              settings.principalTitle,
+              settings.principalName,
+              settings.principalNip,
+              kepsekSigInfo,
+              stampOnKepsek,
+              kepsekSigPx,
+              kepsekSigOffsetX,
+              kepsekSigOffsetY
             );
           }
-          if (sigPng) {
-            doc.addImage(
-              sigPng,
-              'PNG',
-              xMm + sigOffsetX * PX_TO_MM,
-              yMm + 15 - sigH / 2 + sigOffsetY * PX_TO_MM,
-              sigW,
-              sigH
+
+          if (showTtdGuru) {
+            drawPdfSigBlock(
+              guruX,
+              guruY,
+              `${settings.signatureLocation}, ${formatLongDateId(getTodayISO())}`,
+              activeSigner.roleLabel,
+              activeSigner.name,
+              activeSigner.nip,
+              guruSigInfo,
+              stampOnGuru,
+              guruSigPx,
+              guruSigOffsetX,
+              guruSigOffsetY
             );
           }
-          doc.setFont(pdfFont, 'bold');
-          doc.text(personName, xMm, yMm + 25.5);
-          const nameW = doc.getTextWidth(personName);
-          doc.setLineWidth(0.25);
-          doc.line(xMm, yMm + 26.2, xMm + nameW, yMm + 26.2);
-          doc.setFont(pdfFont, 'normal');
-          doc.text(`NIP. ${personNip || '-'}`, xMm, yMm + 30);
-        };
-
-        const stampOnKepsek = sigPos.showStamp;
-        const stampOnGuru = false;
-
-        let kepsekX = marginX + 6;
-        let kepsekY = sigBaseY;
-        let guruX = pageWidth - marginX - 66;
-        let guruY = sigBaseY;
-
-        if (sigPos.preset === 'kanan-kiri') {
-          guruX = marginX + 6;
-          kepsekX = pageWidth - marginX - 66;
-        } else if (sigPos.preset === 'kiri') {
-          kepsekX = marginX + 6;
-          guruX = marginX + 6;
-          guruY = sigBaseY + 36;
-        } else if (sigPos.preset === 'tengah') {
-          kepsekX = pageWidth / 2 - 64;
-          guruX = pageWidth / 2 + 10;
-        } else if (sigPos.preset === 'kanan') {
-          kepsekX = pageWidth - marginX - 66;
-          guruX = pageWidth - marginX - 66;
-          guruY = sigBaseY + 36;
-        } else if (sigPos.preset === 'bebas') {
-          kepsekX = Math.min(maxSigX, marginX + (usableWidth * sigPos.principalX) / 100);
-          kepsekY = sigBaseY + sigPos.principalY * PX_TO_MM;
-          guruX = Math.min(maxSigX, marginX + (usableWidth * sigPos.teacherX) / 100);
-          guruY = sigBaseY + sigPos.teacherY * PX_TO_MM;
         }
-
-        if (showTtdKepsek) {
-          drawPdfSigBlock(
-            kepsekX,
-            kepsekY,
-            'Mengetahui,',
-            settings.principalTitle,
-            settings.principalName,
-            settings.principalNip,
-            kepsekSigPng,
-            stampOnKepsek,
-            kepsekSigPx,
-            kepsekSigOffsetX,
-            kepsekSigOffsetY
-          );
-        }
-
-        if (showTtdGuru) {
-          drawPdfSigBlock(
-            guruX,
-            guruY,
-            `${settings.signatureLocation}, ${formatLongDateId(getTodayISO())}`,
-            activeSigner.roleLabel,
-            activeSigner.name,
-            activeSigner.nip,
-            guruSigPng,
-            stampOnGuru,
-            guruSigPx,
-            guruSigOffsetX,
-            guruSigOffsetY
-          );
-        }
-      }
+      });
 
       doc.save(`Laporan_E-Guru_${reportSlug}_${getTodayISO()}.pdf`);
       onToast('success', 'Laporan PDF vektor 1:1 berhasil diunduh.');
@@ -2488,23 +2904,10 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   };
 
   const handlePrintDirect = () => {
-    if (selectedReportTypes.length === 0) {
-      onToast('error', 'Pilih minimal satu jenis laporan terlebih dahulu.');
-      return;
-    }
+    if (!validateBeforeExport()) return;
     onToast('info', 'Membuka dialog cetak laporan resmi...');
     window.print();
   };
-
-  const includeJournal = selectedReportTypes.includes('journal');
-  const includeAttendance = selectedReportTypes.includes('attendance');
-  const includeAttendanceMonthly = selectedReportTypes.includes('attendance_monthly');
-  const includeAttendanceMonitoring = selectedReportTypes.includes('attendance_monitoring');
-  const includeGrades = selectedReportTypes.includes('grades');
-  const includeGradesRemedial = selectedReportTypes.includes('grades_remedial');
-  const includeGradesLeger = selectedReportTypes.includes('grades_leger');
-  const includeStudentsRoster = selectedReportTypes.includes('students_roster');
-  const includeTeacherActivity = selectedReportTypes.includes('teacher_activity');
 
   const activePaperCfg = PAPER_SIZE_CONFIG[effectivePaperSize];
   const activePaperWidthMm =
@@ -2564,6 +2967,19 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
         <p style={{ margin: 0 }}>{topLabel}</p>
         <p style={{ margin: 0 }}>{roleTitle}</p>
         <div
+          data-sig-media="true"
+          data-stamp-src={withStamp && principalStampImage ? principalStampImage : ''}
+          data-stamp-left={String(
+            (sigPos.preset === 'tengah' ? 87 : 18) - Math.round(stampSizePx / 2) + stampOffsetX
+          )}
+          data-stamp-top={String(stampTopPx)}
+          data-stamp-size={String(stampSizePx)}
+          data-sig-src={sigImage || ''}
+          data-sig-left={String(sigOffsetX)}
+          data-sig-top={String(sigOffsetY)}
+          data-sig-height={String(sigPx)}
+          data-sig-max-width={String(Math.round(sigPx * 2.85))}
+          data-align-center={sigPos.preset === 'tengah' ? 'true' : 'false'}
           style={{
             position: 'relative',
             height: '72px',
@@ -2710,7 +3126,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 print:space-y-0">
       {/* Control Panel (Hidden on Print) */}
       <section className={`no-print bg-white border border-slate-200 rounded-xl p-5 ${filterPanelExpanded ? 'space-y-5' : ''}`}>
         <div className={`flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 ${filterPanelExpanded ? 'border-b border-slate-200 pb-4' : ''}`}>
@@ -2726,7 +3142,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
                   Filter &amp; Pengaturan Cetak Laporan Resmi
                 </h2>
                 <span className="text-[11px] font-medium text-slate-500">
-                  · {selectedReportTypes.length} laporan · {selectedClasses.length} kelas · {effectivePaperSize}
+                  · TA {reportAcademicYear} ({reportSemester}) · {selectedReportTypes.length} laporan · {selectedClasses.length} kelas · {selectedSubjects.length} mapel · {effectivePaperSize}
                 </span>
               </div>
               <p className="text-xs text-slate-500 mt-0.5">
@@ -2801,6 +3217,55 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
               Cetak Langsung
             </button>
           </div>
+        </div>
+
+        {/* Always-visible Quick Teacher Ready-to-Print Bar */}
+        <div className="mt-4 pt-3.5 border-t border-slate-100 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 flex-1 min-w-0">
+            <label
+              htmlFor="rep-teacher-preset"
+              className="text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+            >
+              <UserCheck className="w-4 h-4 text-indigo-600" />
+              Siap Cetak per Guru:
+            </label>
+            <select
+              id="rep-teacher-preset"
+              value={selectedTeacherId}
+              onChange={(e) => applyTeacherPrintPreset(e.target.value, true)}
+              className="w-full sm:max-w-md px-3 py-1.5 text-xs sm:text-sm border border-slate-200 rounded-lg bg-slate-50 focus:bg-white focus:outline-none focus:border-indigo-600 text-slate-800 font-medium"
+            >
+              <option value="">--Semua Guru (Filter Manual)--</option>
+              {teachers.map((t) => {
+                const summaryText = formatTeacherAssignmentsSummary(t);
+                return (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                    {summaryText && summaryText !== '-' ? ` — ${summaryText}` : ''}
+                  </option>
+                );
+              })}
+            </select>
+            {activeTeacher && (
+              <button
+                type="button"
+                onClick={() => applyTeacherPrintPreset('', true)}
+                className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-medium text-slate-600 inline-flex items-center gap-1 whitespace-nowrap self-start sm:self-auto"
+                title="Kembali ke filter manual semua kelas & mapel"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Reset Guru
+              </button>
+            )}
+          </div>
+          {activeTeacher && (
+            <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-indigo-800 bg-indigo-50 border border-indigo-200 rounded-lg px-2.5 py-1.5">
+              <span className="font-semibold">Penugasan Aktif:</span>
+              <span>
+                {formatTeacherAssignmentsSummary(activeTeacher) || 'Belum ada mapel/kelas ditetapkan'}
+              </span>
+            </div>
+          )}
         </div>
 
         {filterPanelExpanded && (
@@ -2967,24 +3432,75 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             )}
           </div>
 
-          <div>
-            <label htmlFor="rep-subject" className="block text-xs font-semibold text-slate-700 mb-1.5">
-              Mata Pelajaran
-            </label>
-            <select
-              id="rep-subject"
-              value={subjectFilter}
-              onChange={(e) => setSubjectFilter(e.target.value)}
-              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+          <div className="relative" ref={subjectDropdownRef}>
+            <span className="block text-xs font-semibold text-slate-700 mb-1.5">
+              Mata Pelajaran (Multi-Select)
+            </span>
+            <button
+              type="button"
+              onClick={() => setSubjectDropdownOpen((o) => !o)}
+              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white text-left flex items-center justify-between gap-2 focus:outline-none focus:border-indigo-600"
             >
-              <option value="">--Pilih Mapel--</option>
-              <option value="ALL">Semua Mata Pelajaran</option>
-              {settings.masterSubjects.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
+              <span className="truncate text-slate-800">
+                {selectedSubjects.length === 0
+                  ? '--Pilih Mapel--'
+                  : selectedSubjects.length === subjectOptions.length && subjectOptions.length > 0
+                  ? `Semua Mata Pelajaran (${subjectOptions.length})`
+                  : selectedSubjects.join(', ')}
+              </span>
+              <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
+            </button>
+
+            {subjectDropdownOpen && (
+              <div className="absolute left-0 right-0 mt-1.5 z-30 bg-white border border-slate-200 rounded-xl shadow-lg p-2 space-y-1">
+                <div className="flex items-center justify-between px-2 py-1 border-b border-slate-100 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSubjects(subjectOptions)}
+                    className="font-semibold text-indigo-600 hover:underline"
+                  >
+                    Pilih Semua
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSubjects([])}
+                    className="text-slate-500 hover:text-slate-700"
+                  >
+                    Kosongkan
+                  </button>
+                </div>
+                <div className="max-h-48 overflow-y-auto space-y-0.5 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedSubjects([]);
+                      setSubjectDropdownOpen(false);
+                    }}
+                    className={`w-full text-left px-2.5 py-1.5 rounded-lg text-sm transition-colors ${
+                      selectedSubjects.length === 0
+                        ? 'bg-indigo-50 text-indigo-700 font-semibold'
+                        : 'text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    --Pilih Mapel--
+                  </button>
+                  {subjectOptions.map((subj) => (
+                    <label
+                      key={subj}
+                      className="flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-slate-50 cursor-pointer text-sm text-slate-800"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedSubjects.includes(subj)}
+                        onChange={() => toggleSubjectSelection(subj)}
+                        className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600"
+                      />
+                      <span>{subj}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           <div>
@@ -3026,9 +3542,40 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
           </div>
         </div>
 
-        {/* Row 2: Date Range + Toggles */}
+        {/* Row 2: Tahun Ajaran, Semester, Date Range + Toggles */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 pt-2 border-t border-slate-100 items-end">
-          <div className="lg:col-span-6 flex flex-wrap items-end gap-2.5">
+          <div className="lg:col-span-7 flex flex-wrap items-end gap-2.5">
+            <div>
+              <label htmlFor="rep-year" className="block text-xs font-semibold text-slate-700 mb-1">
+                Tahun Ajaran
+              </label>
+              <select
+                id="rep-year"
+                value={reportAcademicYear}
+                onChange={(e) => setReportAcademicYear(e.target.value)}
+                className="px-3 py-1.5 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600 font-medium text-slate-800"
+              >
+                {reportYearOptions.map((yr) => (
+                  <option key={yr} value={yr}>
+                    {yr}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="rep-sem" className="block text-xs font-semibold text-slate-700 mb-1">
+                Semester
+              </label>
+              <select
+                id="rep-sem"
+                value={reportSemester}
+                onChange={(e) => setReportSemester(e.target.value as SemesterType)}
+                className="px-3 py-1.5 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600 font-medium text-slate-800"
+              >
+                <option value="Ganjil">Ganjil</option>
+                <option value="Genap">Genap</option>
+              </select>
+            </div>
             <div>
               <label htmlFor="rep-start" className="block text-xs font-semibold text-slate-700 mb-1">
                 Tanggal Mulai
@@ -3079,7 +3626,7 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
             </div>
           </div>
 
-          <div className="lg:col-span-6 flex flex-wrap items-center lg:justify-end gap-4 text-xs sm:text-sm">
+          <div className="lg:col-span-5 flex flex-wrap items-center lg:justify-end gap-4 text-xs sm:text-sm">
             <label className="inline-flex items-center gap-2 cursor-pointer text-slate-700">
               <input
                 type="checkbox"
@@ -3202,7 +3749,20 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
               <select
                 id="rep-signer"
                 value={signerAccountId}
-                onChange={(e) => setSignerAccountId(e.target.value)}
+                onChange={(e) => {
+                  const nextId = e.target.value;
+                  setSignerAccountId(nextId);
+                  if (nextId && nextId !== '__AUTO__') {
+                    const matchedTeacher = findTeacherForAccount(nextId);
+                    if (
+                      matchedTeacher &&
+                      (getTeacherSubjects(matchedTeacher).length > 0 ||
+                        getAllTeacherClasses(matchedTeacher).length > 0)
+                    ) {
+                      applyTeacherPrintPreset(matchedTeacher.id, true);
+                    }
+                  }
+                }}
                 className="w-full px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
                 <option value="">--Pilih Penandatangan--</option>
@@ -4106,1203 +4666,1301 @@ export function ReportsView({ db, onUpdateSettings, onToast }: ReportsViewProps)
         )}
       </section>
 
-      {/* Real-Time Document Preview (Exact 1:1 source for Print, PDF & Word) */}
+      {/* Real-Time Document Preview (Exact 1:1 source for Print, PDF & Word — per class, separate sheet per report type) */}
       <section className="overflow-x-auto pb-4 print:overflow-visible print:pb-0">
-        <div
-          ref={previewRef}
-          style={{
-            width: `${activePaperWidthMm}mm`,
-            minWidth: `${activePaperWidthMm}mm`,
-            padding: '12mm',
-            fontFamily: `"${effectiveFontFamily}", serif`,
-            backgroundColor: '#ffffff',
-            color: '#000000',
-          }}
-          className="print-area mx-auto bg-white border border-slate-200 shadow-sm text-black print:!w-full print:!min-w-0 print:!p-0"
-        >
-          {/* KOP SURAT DINAS */}
-          {showKop && (
-            <header style={{ borderBottom: '4px double #000', paddingBottom: '8px', marginBottom: '16px' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <tbody>
-                  <tr>
-                    <td
-                      style={{
-                        width: `${Math.max(72, kopLeftSize + 10)}px`,
-                        textAlign: 'center',
-                        verticalAlign: 'middle',
-                        border: 'none',
-                      }}
-                    >
-                      {settings.kopSurat.logoLeft && (
-                        <img
-                          src={settings.kopSurat.logoLeft}
-                          alt="Logo Instansi Kiri"
-                          style={{
-                            width: `${kopLeftSize}px`,
-                            height: `${kopLeftSize}px`,
-                            objectFit: 'contain',
-                            display: 'inline-block',
-                          }}
-                        />
-                      )}
-                    </td>
-                    <td
-                      style={{
-                        fontFamily: getPrintFontCss(settings.kopSurat.fontFamily),
-                        verticalAlign: 'middle',
-                        lineHeight: kopLineSpacing,
-                        border: 'none',
-                      }}
-                    >
-                      {KOP_LINE_KEYS.map((key, idx) => {
-                        const text = settings.kopSurat[key];
-                        if (!text) return null;
-                        const s = resolveKopLineStyle(settings.kopSurat, key);
-                        return (
-                          <div
-                            key={key}
-                            style={{
-                              fontSize: `${s.fontSize}pt`,
-                              fontWeight: s.bold ? 700 : 400,
-                              fontStyle: s.italic ? 'italic' : 'normal',
-                              textDecoration: s.underline ? 'underline' : 'none',
-                              textAlign: s.align,
-                              ...(s.align === 'justify' ? { textAlignLast: 'justify' as const } : {}),
-                              ...(idx < 3 ? { textTransform: 'uppercase' as const } : {}),
-                              ...(key === 'line4' ? { marginTop: '3px' } : {}),
-                            }}
-                          >
-                            {text}
-                          </div>
-                        );
-                      })}
-                    </td>
-                    <td
-                      style={{
-                        width: `${Math.max(72, kopRightSize + 10)}px`,
-                        textAlign: 'center',
-                        verticalAlign: 'middle',
-                        border: 'none',
-                      }}
-                    >
-                      {settings.kopSurat.logoRight && (
-                        <img
-                          src={settings.kopSurat.logoRight}
-                          alt="Logo Sekolah Kanan"
-                          style={{
-                            width: `${kopRightSize}px`,
-                            height: `${kopRightSize}px`,
-                            objectFit: 'contain',
-                            display: 'inline-block',
-                          }}
-                        />
-                      )}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </header>
-          )}
-
-          {/* Judul Dokumen */}
-          <div style={{ textAlign: 'center', marginBottom: '14px' }}>
-            <h2
-              style={{
-                fontSize: '12pt',
-                fontWeight: 700,
-                textTransform: 'uppercase',
-                textDecoration: 'underline',
-                textUnderlineOffset: '3px',
-                margin: 0,
-              }}
-            >
-              {reportTitle}
-            </h2>
-            <p style={{ fontSize: '9pt', marginTop: '4px', marginBottom: 0, color: '#334155' }}>
-              {periodSubtitle} · Rentang Tanggal: {dateRangeLabel}
-            </p>
-          </div>
-
-          {selectedReportTypes.length === 0 && (
+        <div ref={previewRef} className="print-area space-y-6 print:space-y-0">
+          {reportSheets.length === 0 ? (
             <div
               style={{
-                border: '1px dashed #94a3b8',
-                padding: '24px',
-                textAlign: 'center',
-                color: '#475569',
-                fontSize: '10pt',
-                marginBottom: '20px',
+                width: `${activePaperWidthMm}mm`,
+                minWidth: `${activePaperWidthMm}mm`,
+                padding: '12mm',
+                fontFamily: getPrintFontCss(effectiveFontFamily),
+                backgroundColor: '#ffffff',
+                color: '#000000',
               }}
+              className="mx-auto bg-white border border-slate-200 shadow-sm text-black print:!w-full print:!min-w-0 print:!p-0 print:!border-0 print:!shadow-none"
             >
-              Belum ada jenis laporan yang dipilih. Silakan centang minimal 1 jenis laporan di menu <strong>Jenis Laporan (Multi-Select)</strong> di atas.
+              <div
+                style={{
+                  border: '1px dashed #94a3b8',
+                  padding: '24px',
+                  textAlign: 'center',
+                  color: '#475569',
+                  fontSize: '10pt',
+                }}
+              >
+                {orderedSelectedReportTypes.length === 0 ? (
+                  <>
+                    Belum ada jenis laporan yang dipilih. Silakan centang minimal 1 jenis laporan di menu{' '}
+                    <strong>Jenis Laporan (Multi-Select)</strong> di atas.
+                  </>
+                ) : (
+                  <>
+                    Belum ada kelas yang dipilih. Silakan centang minimal 1 kelas di menu{' '}
+                    <strong>Pilih Kelas (Multi-Select)</strong> di atas.
+                  </>
+                )}
+              </div>
             </div>
-          )}
+          ) : (
+            reportSheets.map((sheet, sheetIdx) => {
+              const cls = sheet.className;
 
-          {/* 1. Jurnal Mengajar */}
-          {includeJournal && (
-            <div style={{ marginBottom: '20px' }}>
-              {selectedReportTypes.length > 1 && (
-                <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
-                  Jurnal Kegiatan Mengajar
-                </h3>
-              )}
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
-                <thead>
-                  <tr style={{ backgroundColor: '#f1f5f9' }}>
-                    <th style={{ border: '1px solid #000', padding: '5px 6px', textAlign: 'center', width: '30px' }}>No</th>
-                    <th style={{ border: '1px solid #000', padding: '5px 6px', whiteSpace: 'nowrap' }}>Tanggal</th>
-                    <th style={{ border: '1px solid #000', padding: '5px 6px', textAlign: 'center', whiteSpace: 'nowrap' }}>Jam</th>
-                    <th style={{ border: '1px solid #000', padding: '5px 6px', whiteSpace: 'nowrap' }}>Kelas</th>
-                    <th style={{ border: '1px solid #000', padding: '5px 6px', whiteSpace: 'nowrap' }}>Mata Pelajaran</th>
-                    <th style={{ border: '1px solid #000', padding: '5px 6px' }}>Materi Pokok</th>
-                    <th style={{ border: '1px solid #000', padding: '5px 6px' }}>Kegiatan Pembelajaran</th>
-                    <th style={{ border: '1px solid #000', padding: '5px 6px', textAlign: 'center', whiteSpace: 'nowrap' }}>H/S/I/A/D</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredJournals.length === 0 ? (
-                    <tr>
-                      <td colSpan={8} style={{ border: '1px solid #000', padding: '12px', textAlign: 'center', color: '#64748b' }}>
-                        Tidak ada catatan jurnal mengajar untuk kriteria filter terpilih.
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredJournals.map((j, idx) => {
-                      const sum = summarizeJournalRow(j);
-                      return (
-                        <tr key={j.id}>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }} className="tabular-nums">
-                            {idx + 1}
-                          </td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }} className="tabular-nums">
-                            {formatShortDateId(j.date)}
-                          </td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }} className="tabular-nums">
-                            {j.jamKe}
-                          </td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap', fontWeight: 600 }}>
-                            {j.className}
-                          </td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>
-                            {j.subject}
-                          </td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px' }}>{j.topic}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px' }}>{j.activity}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', whiteSpace: 'nowrap' }} className="tabular-nums">
-                            {sum.counts.H}/{sum.counts.S}/{sum.counts.I}/{sum.counts.A}/{sum.counts.D}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {/* 2. Leger Kehadiran Mendatar */}
-          {includeAttendance && (
-            <div style={{ marginBottom: '24px' }}>
-              {selectedClasses.map((cls) => {
-                const { classStudents, classJournals } = getAttendanceBlockForClass(cls);
+              const renderSignatureZone = () => {
+                if (!showTtdKepsek && !showTtdGuru) return null;
                 return (
-                  <div key={cls} style={{ marginBottom: '18px' }}>
-                    <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
-                      Leger Kehadiran Mendatar — Kelas {cls}
-                    </h3>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '7.5pt' }}>
-                      <thead>
-                        <tr style={{ backgroundColor: '#f1f5f9' }}>
-                          <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', width: '28px' }}>No</th>
-                          <th style={{ border: '1px solid #000', padding: '4px', whiteSpace: 'nowrap' }}>NIS</th>
-                          <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Nama Siswa</th>
-                          {classJournals.map((j) => (
-                            <th key={j.id} style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', whiteSpace: 'nowrap' }}>
-                              {formatCompactDateId(j.date)}
-                            </th>
-                          ))}
-                          <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>H</th>
-                          <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>S</th>
-                          <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>I</th>
-                          <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>A</th>
-                          <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>D</th>
-                          <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>%</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {classStudents.length === 0 ? (
+                  <div className="print-avoid-break" style={{ marginTop: '24px', paddingTop: '8px' }}>
+                    {sigPos.preset === 'bebas' ? (
+                      <div
+                        ref={sheetIdx === 0 ? sigCanvasRef : undefined}
+                        data-sig-canvas="true"
+                        style={{
+                          position: 'relative',
+                          minHeight: `${Math.max(215, Math.max(sigPos.principalY, sigPos.teacherY) + 155)}px`,
+                          width: '100%',
+                        }}
+                      >
+                        {showTtdKepsek && (
+                          <div
+                            data-sig-block="kepsek"
+                            onPointerDown={(e) => handleSigPointerDown('kepsek', e)}
+                            title="Seret teks blok untuk mengatur posisi Kepala Sekolah"
+                            style={{
+                              position: 'absolute',
+                              left: `${sigPos.principalX}%`,
+                              top: `${sigPos.principalY}px`,
+                              width: '220px',
+                              cursor:
+                                activeInteraction?.kind === 'block' &&
+                                activeInteraction.target === 'kepsek'
+                                  ? 'grabbing'
+                                  : 'grab',
+                              userSelect: 'none',
+                              touchAction: 'none',
+                              padding: '4px',
+                              borderRadius: '6px',
+                            }}
+                            className="group hover:outline-1 hover:outline-dashed hover:outline-indigo-500"
+                          >
+                            <span
+                              data-export-ignore="true"
+                              className="no-print opacity-0 group-hover:opacity-100 transition-opacity absolute -top-5 left-0 px-1.5 py-0.5 rounded bg-indigo-600 text-white text-[10px] font-sans font-semibold whitespace-nowrap pointer-events-none"
+                            >
+                              Geser Blok ({sigPos.principalX}%, {sigPos.principalY}px)
+                            </span>
+                            {renderSigCard(
+                              'kepsek',
+                              'Mengetahui,',
+                              settings.principalTitle,
+                              settings.principalName,
+                              settings.principalNip,
+                              showSignatureImage ? settings.principalSignatureImage : '',
+                              stampOnKepsek,
+                              kepsekSigSizePx,
+                              kepsekSigOffsetX,
+                              kepsekSigOffsetY
+                            )}
+                          </div>
+                        )}
+                        {showTtdGuru && (
+                          <div
+                            data-sig-block="guru"
+                            onPointerDown={(e) => handleSigPointerDown('guru', e)}
+                            title="Seret teks blok untuk mengatur posisi Guru / Pemilik Akun"
+                            style={{
+                              position: 'absolute',
+                              left: `${sigPos.teacherX}%`,
+                              top: `${sigPos.teacherY}px`,
+                              width: '220px',
+                              cursor:
+                                activeInteraction?.kind === 'block' &&
+                                activeInteraction.target === 'guru'
+                                  ? 'grabbing'
+                                  : 'grab',
+                              userSelect: 'none',
+                              touchAction: 'none',
+                              padding: '4px',
+                              borderRadius: '6px',
+                            }}
+                            className="group hover:outline-1 hover:outline-dashed hover:outline-indigo-500"
+                          >
+                            <span
+                              data-export-ignore="true"
+                              className="no-print opacity-0 group-hover:opacity-100 transition-opacity absolute -top-5 left-0 px-1.5 py-0.5 rounded bg-indigo-600 text-white text-[10px] font-sans font-semibold whitespace-nowrap pointer-events-none"
+                            >
+                              Geser Blok ({sigPos.teacherX}%, {sigPos.teacherY}px)
+                            </span>
+                            {renderSigCard(
+                              'guru',
+                              `${settings.signatureLocation}, ${formatLongDateId(getTodayISO())}`,
+                              activeSigner.roleLabel,
+                              activeSigner.name,
+                              activeSigner.nip,
+                              showSignatureImage ? activeSigner.signatureImage : '',
+                              stampOnGuru,
+                              guruSigSizePx,
+                              guruSigOffsetX,
+                              guruSigOffsetY
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div ref={sheetIdx === 0 ? sigCanvasRef : undefined} style={{ width: '100%' }}>
+                        {sigPos.preset === 'kiri' ? (
+                          <div style={{ paddingLeft: '16px' }}>
+                            {showTtdKepsek && (
+                              <div
+                                onPointerDown={(e) => handleSigPointerDown('kepsek', e)}
+                                title="Seret blok untuk menyesuaikan posisi"
+                                style={{ width: '220px', marginBottom: '20px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
+                                className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
+                              >
+                                {renderSigCard(
+                                  'kepsek',
+                                  'Mengetahui,',
+                                  settings.principalTitle,
+                                  settings.principalName,
+                                  settings.principalNip,
+                                  showSignatureImage ? settings.principalSignatureImage : '',
+                                  stampOnKepsek,
+                                  kepsekSigSizePx,
+                                  kepsekSigOffsetX,
+                                  kepsekSigOffsetY
+                                )}
+                              </div>
+                            )}
+                            {showTtdGuru && (
+                              <div
+                                onPointerDown={(e) => handleSigPointerDown('guru', e)}
+                                title="Seret blok untuk menyesuaikan posisi"
+                                style={{ width: '220px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
+                                className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
+                              >
+                                {renderSigCard(
+                                  'guru',
+                                  `${settings.signatureLocation}, ${formatLongDateId(getTodayISO())}`,
+                                  activeSigner.roleLabel,
+                                  activeSigner.name,
+                                  activeSigner.nip,
+                                  showSignatureImage ? activeSigner.signatureImage : '',
+                                  stampOnGuru,
+                                  guruSigSizePx,
+                                  guruSigOffsetX,
+                                  guruSigOffsetY
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ) : sigPos.preset === 'kanan' ? (
+                          <table data-layout-table="true" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                            <tbody>
+                              <tr>
+                                <td style={{ border: 'none', padding: 0 }} />
+                                <td style={{ width: '240px', verticalAlign: 'top', border: 'none', padding: 0 }}>
+                                  {showTtdKepsek && (
+                                    <div
+                                      onPointerDown={(e) => handleSigPointerDown('kepsek', e)}
+                                      title="Seret blok untuk menyesuaikan posisi"
+                                      style={{ marginBottom: '20px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
+                                      className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
+                                    >
+                                      {renderSigCard(
+                                        'kepsek',
+                                        'Mengetahui,',
+                                        settings.principalTitle,
+                                        settings.principalName,
+                                        settings.principalNip,
+                                        showSignatureImage ? settings.principalSignatureImage : '',
+                                        stampOnKepsek,
+                                        kepsekSigSizePx,
+                                        kepsekSigOffsetX,
+                                        kepsekSigOffsetY
+                                      )}
+                                    </div>
+                                  )}
+                                  {showTtdGuru && (
+                                    <div
+                                      onPointerDown={(e) => handleSigPointerDown('guru', e)}
+                                      title="Seret blok untuk menyesuaikan posisi"
+                                      style={{ cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
+                                      className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
+                                    >
+                                      {renderSigCard(
+                                        'guru',
+                                        `${settings.signatureLocation}, ${formatLongDateId(getTodayISO())}`,
+                                        activeSigner.roleLabel,
+                                        activeSigner.name,
+                                        activeSigner.nip,
+                                        showSignatureImage ? activeSigner.signatureImage : '',
+                                        stampOnGuru,
+                                        guruSigSizePx,
+                                        guruSigOffsetX,
+                                        guruSigOffsetY
+                                      )}
+                                    </div>
+                                  )}
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        ) : sigPos.preset === 'tengah' ? (
+                          <table data-layout-table="true" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'center' }}>
+                            <tbody>
+                              <tr>
+                                {showTtdKepsek && (
+                                  <td style={{ verticalAlign: 'top', textAlign: 'center', border: 'none' }}>
+                                    <div
+                                      onPointerDown={(e) => handleSigPointerDown('kepsek', e)}
+                                      title="Seret blok untuk menyesuaikan posisi"
+                                      style={{ display: 'inline-block', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
+                                      className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
+                                    >
+                                      {renderSigCard(
+                                        'kepsek',
+                                        'Mengetahui,',
+                                        settings.principalTitle,
+                                        settings.principalName,
+                                        settings.principalNip,
+                                        showSignatureImage ? settings.principalSignatureImage : '',
+                                        stampOnKepsek,
+                                        kepsekSigSizePx,
+                                        kepsekSigOffsetX,
+                                        kepsekSigOffsetY
+                                      )}
+                                    </div>
+                                  </td>
+                                )}
+                                {showTtdGuru && (
+                                  <td style={{ verticalAlign: 'top', textAlign: 'center', border: 'none' }}>
+                                    <div
+                                      onPointerDown={(e) => handleSigPointerDown('guru', e)}
+                                      title="Seret blok untuk menyesuaikan posisi"
+                                      style={{ display: 'inline-block', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
+                                      className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
+                                    >
+                                      {renderSigCard(
+                                        'guru',
+                                        `${settings.signatureLocation}, ${formatLongDateId(getTodayISO())}`,
+                                        activeSigner.roleLabel,
+                                        activeSigner.name,
+                                        activeSigner.nip,
+                                        showSignatureImage ? activeSigner.signatureImage : '',
+                                        stampOnGuru,
+                                        guruSigSizePx,
+                                        guruSigOffsetX,
+                                        guruSigOffsetY
+                                      )}
+                                    </div>
+                                  </td>
+                                )}
+                              </tr>
+                            </tbody>
+                          </table>
+                        ) : sigPos.preset === 'kanan-kiri' ? (
+                          <table data-layout-table="true" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                            <tbody>
+                              <tr>
+                                <td style={{ width: '50%', verticalAlign: 'top', paddingLeft: '16px', border: 'none' }}>
+                                  {showTtdGuru && (
+                                    <div
+                                      onPointerDown={(e) => handleSigPointerDown('guru', e)}
+                                      title="Seret blok untuk menyesuaikan posisi"
+                                      style={{ width: '220px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
+                                      className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
+                                    >
+                                      {renderSigCard(
+                                        'guru',
+                                        `${settings.signatureLocation}, ${formatLongDateId(getTodayISO())}`,
+                                        activeSigner.roleLabel,
+                                        activeSigner.name,
+                                        activeSigner.nip,
+                                        showSignatureImage ? activeSigner.signatureImage : '',
+                                        stampOnGuru,
+                                        guruSigSizePx,
+                                        guruSigOffsetX,
+                                        guruSigOffsetY
+                                      )}
+                                    </div>
+                                  )}
+                                </td>
+                                <td style={{ width: '50%', verticalAlign: 'top', paddingLeft: '18%', border: 'none' }}>
+                                  {showTtdKepsek && (
+                                    <div
+                                      onPointerDown={(e) => handleSigPointerDown('kepsek', e)}
+                                      title="Seret blok untuk menyesuaikan posisi"
+                                      style={{ width: '220px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
+                                      className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
+                                    >
+                                      {renderSigCard(
+                                        'kepsek',
+                                        'Mengetahui,',
+                                        settings.principalTitle,
+                                        settings.principalName,
+                                        settings.principalNip,
+                                        showSignatureImage ? settings.principalSignatureImage : '',
+                                        stampOnKepsek,
+                                        kepsekSigSizePx,
+                                        kepsekSigOffsetX,
+                                        kepsekSigOffsetY
+                                      )}
+                                    </div>
+                                  )}
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        ) : (
+                          <table data-layout-table="true" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                            <tbody>
+                              <tr>
+                                <td style={{ width: '50%', verticalAlign: 'top', paddingLeft: '16px', border: 'none' }}>
+                                  {showTtdKepsek && (
+                                    <div
+                                      onPointerDown={(e) => handleSigPointerDown('kepsek', e)}
+                                      title="Seret blok untuk menyesuaikan posisi"
+                                      style={{ width: '220px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
+                                      className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
+                                    >
+                                      {renderSigCard(
+                                        'kepsek',
+                                        'Mengetahui,',
+                                        settings.principalTitle,
+                                        settings.principalName,
+                                        settings.principalNip,
+                                        showSignatureImage ? settings.principalSignatureImage : '',
+                                        stampOnKepsek,
+                                        kepsekSigSizePx,
+                                        kepsekSigOffsetX,
+                                        kepsekSigOffsetY
+                                      )}
+                                    </div>
+                                  )}
+                                </td>
+                                <td style={{ width: '50%', verticalAlign: 'top', paddingLeft: '18%', border: 'none' }}>
+                                  {showTtdGuru && (
+                                    <div
+                                      onPointerDown={(e) => handleSigPointerDown('guru', e)}
+                                      title="Seret blok untuk menyesuaikan posisi"
+                                      style={{ width: '220px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
+                                      className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
+                                    >
+                                      {renderSigCard(
+                                        'guru',
+                                        `${settings.signatureLocation}, ${formatLongDateId(getTodayISO())}`,
+                                        activeSigner.roleLabel,
+                                        activeSigner.name,
+                                        activeSigner.nip,
+                                        showSignatureImage ? activeSigner.signatureImage : '',
+                                        stampOnGuru,
+                                        guruSigSizePx,
+                                        guruSigOffsetX,
+                                        guruSigOffsetY
+                                      )}
+                                    </div>
+                                  )}
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              };
+
+              return (
+                <div
+                  key={sheet.key}
+                  data-report-sheet="true"
+                  data-page-break={sheetIdx > 0 ? 'true' : 'false'}
+                  style={{
+                    width: `${activePaperWidthMm}mm`,
+                    minWidth: `${activePaperWidthMm}mm`,
+                    padding: '12mm',
+                    fontFamily: getPrintFontCss(effectiveFontFamily),
+                    backgroundColor: '#ffffff',
+                    color: '#000000',
+                  }}
+                  className={`mx-auto bg-white border border-slate-200 shadow-sm text-black print:!w-full print:!min-w-0 print:!p-0 print:!border-0 print:!shadow-none print:!m-0 ${
+                    sheetIdx > 0 ? 'print-page-break' : ''
+                  }`}
+                >
+                  {/* Screen-only page indicator */}
+                  {reportSheets.length > 1 && (
+                    <div
+                      data-export-ignore="true"
+                      className="no-print mb-3 pb-2 border-b border-dashed border-slate-200 flex items-center justify-between text-[11px] font-sans text-slate-500"
+                    >
+                      <span className="font-semibold text-indigo-700">
+                        Lembaran {sheetIdx + 1} dari {reportSheets.length}
+                        {cls ? ` · Kelas ${cls}` : ''} — {sheet.label}
+                      </span>
+                      <span>Lembaran terpisah saat cetak / unduh PDF &amp; Word</span>
+                    </div>
+                  )}
+
+                  {/* KOP SURAT DINAS */}
+                  {showKop && (
+                    <div
+                      data-kop-wrapper="true"
+                      style={{ borderBottom: '4px double #000000', paddingBottom: '10px', marginBottom: '16px' }}
+                    >
+                      <table data-layout-table="true" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                        <tbody>
                           <tr>
-                            <td colSpan={9 + classJournals.length} style={{ border: '1px solid #000', padding: '10px', textAlign: 'center', color: '#64748b' }}>
-                              Belum ada data siswa di kelas {cls}.
+                            <td
+                              style={{
+                                width: `${Math.max(76, kopLeftSize + 14)}px`,
+                                textAlign: 'center',
+                                verticalAlign: 'middle',
+                                padding: '0 6px',
+                                border: 'none',
+                              }}
+                            >
+                              {settings.kopSurat.logoLeft && (
+                                <img
+                                  src={settings.kopSurat.logoLeft}
+                                  alt="Logo Instansi Kiri"
+                                  style={{
+                                    width: `${kopLeftSize}px`,
+                                    height: `${kopLeftSize}px`,
+                                    objectFit: 'contain',
+                                    display: 'inline-block',
+                                  }}
+                                />
+                              )}
+                            </td>
+                            <td
+                              style={{
+                                fontFamily: getPrintFontCss(settings.kopSurat.fontFamily),
+                                verticalAlign: 'middle',
+                                lineHeight: `${Math.round(kopLineSpacing * 100)}%`,
+                                padding: '0 4px',
+                                border: 'none',
+                              }}
+                            >
+                              {KOP_LINE_KEYS.map((key, idx) => {
+                                const text = settings.kopSurat[key];
+                                if (!text) return null;
+                                const s = resolveKopLineStyle(settings.kopSurat, key);
+                                return (
+                                  <div
+                                    key={key}
+                                    style={{
+                                      margin: 0,
+                                      padding: 0,
+                                      lineHeight: `${Math.round(kopLineSpacing * 100)}%`,
+                                      fontSize: `${s.fontSize}pt`,
+                                      fontWeight: s.bold ? 700 : 400,
+                                      fontStyle: s.italic ? 'italic' : 'normal',
+                                      textDecoration: s.underline ? 'underline' : 'none',
+                                      textAlign: s.align,
+                                      ...(s.align === 'justify' ? { textAlignLast: 'justify' as const } : {}),
+                                      ...(idx < 3 ? { textTransform: 'uppercase' as const } : {}),
+                                      ...(key === 'line4' ? { marginTop: '3px' } : {}),
+                                    }}
+                                  >
+                                    {text}
+                                  </div>
+                                );
+                              })}
+                            </td>
+                            <td
+                              style={{
+                                width: `${Math.max(76, kopRightSize + 14)}px`,
+                                textAlign: 'center',
+                                verticalAlign: 'middle',
+                                padding: '0 6px',
+                                border: 'none',
+                              }}
+                            >
+                              {settings.kopSurat.logoRight && (
+                                <img
+                                  src={settings.kopSurat.logoRight}
+                                  alt="Logo Sekolah Kanan"
+                                  style={{
+                                    width: `${kopRightSize}px`,
+                                    height: `${kopRightSize}px`,
+                                    objectFit: 'contain',
+                                    display: 'inline-block',
+                                  }}
+                                />
+                              )}
                             </td>
                           </tr>
-                        ) : (
-                          classStudents.map((st, idx) => {
-                            const counts: Record<AttendanceStatus, number> = { H: 0, S: 0, I: 0, A: 0, D: 0 };
-                            const codes = classJournals.map((j) => {
-                              const code = j.attendance[st.id]?.status ?? 'H';
-                              counts[code] += 1;
-                              return code;
-                            });
-                            const pct =
-                              classJournals.length > 0
-                                ? `${((counts.H / classJournals.length) * 100).toFixed(0)}%`
-                                : '-';
-                            return (
-                              <tr key={st.id}>
-                                <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }} className="tabular-nums">{idx + 1}</td>
-                                <td style={{ border: '1px solid #000', padding: '4px', whiteSpace: 'nowrap' }} className="tabular-nums">{st.nis}</td>
-                                <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{st.name}</td>
-                                {codes.map((c, cIdx) => (
-                                  <td key={cIdx} style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', fontWeight: 600 }}>
-                                    {c}
-                                  </td>
-                                ))}
-                                <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{counts.H}</td>
-                                <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{counts.S}</td>
-                                <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{counts.I}</td>
-                                <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{counts.A}</td>
-                                <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{counts.D}</td>
-                                <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', fontWeight: 700 }}>{pct}</td>
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {/* Judul Dokumen per Lembaran */}
+                  <div style={{ textAlign: 'center', marginBottom: '14px' }}>
+                    <h2
+                      style={{
+                        fontSize: '12pt',
+                        fontWeight: 700,
+                        textTransform: 'uppercase',
+                        textDecoration: 'underline',
+                        textUnderlineOffset: '3px',
+                        margin: 0,
+                      }}
+                    >
+                      {sheet.officialTitle}
+                    </h2>
+                    <p style={{ fontSize: '9pt', marginTop: '4px', marginBottom: 0, color: '#334155' }}>
+                      {sheet.subtitle}
+                    </p>
+                  </div>
+
+                  {/* 1. Jurnal Mengajar per Kelas */}
+                  {sheet.reportType === 'journal' && cls && (() => {
+                    const classJournals = filteredJournals.filter((j) => j.className === cls);
+                    return (
+                      <div style={{ marginBottom: '20px' }}>
+                        <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
+                          Jurnal Kegiatan Mengajar — Kelas {cls}
+                        </h3>
+                        <table className="report-data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
+                          <thead>
+                            <tr style={{ backgroundColor: '#f1f5f9' }}>
+                              <th style={{ border: '1px solid #000', padding: '5px 6px', textAlign: 'center', width: '30px' }}>No</th>
+                              <th style={{ border: '1px solid #000', padding: '5px 6px', whiteSpace: 'nowrap' }}>Tanggal</th>
+                              <th style={{ border: '1px solid #000', padding: '5px 6px', textAlign: 'center', whiteSpace: 'nowrap' }}>Jam</th>
+                              <th style={{ border: '1px solid #000', padding: '5px 6px', whiteSpace: 'nowrap' }}>Kelas</th>
+                              <th style={{ border: '1px solid #000', padding: '5px 6px', whiteSpace: 'nowrap' }}>Mata Pelajaran</th>
+                              <th style={{ border: '1px solid #000', padding: '5px 6px' }}>Materi Pokok</th>
+                              <th style={{ border: '1px solid #000', padding: '5px 6px' }}>Kegiatan Pembelajaran</th>
+                              <th style={{ border: '1px solid #000', padding: '5px 6px', textAlign: 'center', whiteSpace: 'nowrap' }}>H/S/I/A/D</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {classJournals.length === 0 ? (
+                              <tr>
+                                <td colSpan={8} style={{ border: '1px solid #000', padding: '12px', textAlign: 'center', color: '#64748b' }}>
+                                  Tidak ada catatan jurnal mengajar untuk kelas {cls} pada filter terpilih.
+                                </td>
                               </tr>
+                            ) : (
+                              classJournals.map((j, idx) => {
+                                const sum = summarizeJournalRow(j);
+                                return (
+                                  <tr key={j.id}>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }} className="tabular-nums">
+                                      {idx + 1}
+                                    </td>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }} className="tabular-nums">
+                                      {formatShortDateId(j.date)}
+                                    </td>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }} className="tabular-nums">
+                                      {j.jamKe}
+                                    </td>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap', fontWeight: 600 }}>
+                                      {j.className}
+                                    </td>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>
+                                      {j.subject}
+                                    </td>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px' }}>{j.topic}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px' }}>{j.activity}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', whiteSpace: 'nowrap' }} className="tabular-nums">
+                                      {sum.counts.H}/{sum.counts.S}/{sum.counts.I}/{sum.counts.A}/{sum.counts.D}
+                                    </td>
+                                  </tr>
+                                );
+                              })
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })()}
+
+                  {/* 2. Leger Kehadiran Mendatar per Kelas */}
+                  {sheet.reportType === 'attendance' && cls && (() => {
+                    const { classStudents, classJournals } = getAttendanceBlockForClass(cls);
+                    return (
+                      <div style={{ marginBottom: '20px' }}>
+                        <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
+                          Leger Kehadiran Mendatar — Kelas {cls}
+                        </h3>
+                        <table className="report-data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '7.5pt' }}>
+                          <thead>
+                            <tr style={{ backgroundColor: '#f1f5f9' }}>
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', width: '28px' }}>No</th>
+                              <th style={{ border: '1px solid #000', padding: '4px', whiteSpace: 'nowrap' }}>NIS</th>
+                              <th style={{ border: '1px solid #000', padding: '4px', whiteSpace: 'nowrap' }}>NISN</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Nama Siswa</th>
+                              {classJournals.map((j) => (
+                                <th key={j.id} style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', whiteSpace: 'nowrap' }}>
+                                  {formatCompactDateId(j.date)}
+                                </th>
+                              ))}
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>H</th>
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>S</th>
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>I</th>
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>A</th>
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>D</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>%</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {classStudents.length === 0 ? (
+                              <tr>
+                                <td colSpan={10 + classJournals.length} style={{ border: '1px solid #000', padding: '10px', textAlign: 'center', color: '#64748b' }}>
+                                  Belum ada data siswa di kelas {cls}.
+                                </td>
+                              </tr>
+                            ) : (
+                              classStudents.map((st, idx) => {
+                                const counts: Record<AttendanceStatus, number> = { H: 0, S: 0, I: 0, A: 0, D: 0 };
+                                const codes = classJournals.map((j) => {
+                                  const code = j.attendance[st.id]?.status ?? 'H';
+                                  counts[code] += 1;
+                                  return code;
+                                });
+                                const pct =
+                                  classJournals.length > 0
+                                    ? `${((counts.H / classJournals.length) * 100).toFixed(0)}%`
+                                    : '-';
+                                return (
+                                  <tr key={st.id}>
+                                    <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }} className="tabular-nums">{idx + 1}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px', whiteSpace: 'nowrap' }} className="tabular-nums">{st.nis}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px', whiteSpace: 'nowrap' }} className="tabular-nums">{st.nisn || '-'}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{st.name}</td>
+                                    {codes.map((c, cIdx) => (
+                                      <td key={cIdx} style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', fontWeight: 600 }}>
+                                        {c}
+                                      </td>
+                                    ))}
+                                    <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{counts.H}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{counts.S}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{counts.I}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{counts.A}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{counts.D}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', fontWeight: 700 }}>{pct}</td>
+                                  </tr>
+                                );
+                              })
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })()}
+
+                  {/* 3. Rekap Presensi Bulanan per Kelas */}
+                  {sheet.reportType === 'attendance_monthly' && cls && (() => {
+                    const { months, rows, classAvgPct } = getMonthlyAttendanceForClass(cls);
+                    return (
+                      <div style={{ marginBottom: '20px' }}>
+                        <table data-layout-table="true" style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '6px' }}>
+                          <tbody>
+                            <tr>
+                              <td style={{ border: 'none', padding: 0, textAlign: 'left', verticalAlign: 'baseline' }}>
+                                <h3 style={{ fontSize: '10pt', fontWeight: 700, margin: 0 }}>
+                                  Rekap Presensi Bulanan — Kelas {cls}
+                                </h3>
+                              </td>
+                              <td style={{ border: 'none', padding: 0, textAlign: 'right', verticalAlign: 'baseline', fontSize: '8pt', color: '#334155' }}>
+                                Rata-rata Kehadiran Kelas: {classAvgPct !== null ? `${classAvgPct.toFixed(1)}%` : '-'}
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                        <table className="report-data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
+                          <thead>
+                            <tr style={{ backgroundColor: '#f1f5f9' }}>
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', width: '28px' }}>No</th>
+                              <th style={{ border: '1px solid #000', padding: '4px', whiteSpace: 'nowrap' }}>NIS</th>
+                              <th style={{ border: '1px solid #000', padding: '4px', whiteSpace: 'nowrap' }}>NISN</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Nama Siswa</th>
+                              {months.map((m) => (
+                                <th key={m} style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', whiteSpace: 'nowrap' }}>
+                                  {formatMonthLabelId(m)}
+                                </th>
+                              ))}
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', whiteSpace: 'nowrap' }}>Sesi</th>
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>H</th>
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>S</th>
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>I</th>
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>A</th>
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>D</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>% Hadir</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.length === 0 ? (
+                              <tr>
+                                <td colSpan={11 + months.length} style={{ border: '1px solid #000', padding: '10px', textAlign: 'center', color: '#64748b' }}>
+                                  Belum ada siswa di kelas {cls}.
+                                </td>
+                              </tr>
+                            ) : (
+                              rows.map((r) => (
+                                <tr key={`m-${cls}-${r.nis}-${r.no}`}>
+                                  <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }} className="tabular-nums">{r.no}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px', whiteSpace: 'nowrap' }} className="tabular-nums">{r.nis}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px', whiteSpace: 'nowrap' }} className="tabular-nums">{r.nisn}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.name}</td>
+                                  {months.map((m) => {
+                                    const mc = r.monthCounts[m];
+                                    return (
+                                      <td key={m} style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }} className="tabular-nums">
+                                        {mc && mc.total > 0 ? `${mc.h}/${mc.total}` : '-'}
+                                      </td>
+                                    );
+                                  })}
+                                  <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }} className="tabular-nums">{r.totalMeetings}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{r.totals.H}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{r.totals.S}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{r.totals.I}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{r.totals.A}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{r.totals.D}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', fontWeight: 700 }}>
+                                    {r.pct !== null ? `${r.pct.toFixed(0)}%` : '-'}
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })()}
+
+                  {/* 4. Monitoring S/I/A/D per Kelas */}
+                  {sheet.reportType === 'attendance_monitoring' && cls && (() => {
+                    const clsMonitoring = getMonitoringAbsenceForClass(cls);
+                    return (
+                      <div style={{ marginBottom: '20px' }}>
+                        <div style={{ marginBottom: '14px' }}>
+                          <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
+                            Monitoring S/I/A/D — Rekap Akumulasi Ketidakhadiran Kelas {cls}
+                          </h3>
+                          <table className="report-data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
+                            <thead>
+                              <tr style={{ backgroundColor: '#f1f5f9' }}>
+                                <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', width: '28px' }}>No</th>
+                                <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>NIS</th>
+                                <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Nama Siswa</th>
+                                <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>Kelas</th>
+                                <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>S</th>
+                                <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>I</th>
+                                <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>A</th>
+                                <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>D</th>
+                                <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>Total</th>
+                                <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left', whiteSpace: 'nowrap' }}>Status Pembinaan</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {clsMonitoring.summary.length === 0 ? (
+                                <tr>
+                                  <td colSpan={10} style={{ border: '1px solid #000', padding: '10px', textAlign: 'center', color: '#64748b' }}>
+                                    Seluruh siswa kelas {cls} tercatat Hadir (H) 100% pada periode filter ini.
+                                  </td>
+                                </tr>
+                              ) : (
+                                clsMonitoring.summary.map((it, idx) => (
+                                  <tr key={it.studentId}>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>{idx + 1}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{it.nis}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{it.name}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{it.className}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{it.S}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{it.I}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', fontWeight: 700 }}>{it.A}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{it.D}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', fontWeight: 700 }}>{it.total}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{it.action}</td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        <div>
+                          <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
+                            Kronologi Ketidakhadiran (S/I/A/D) — Kelas {cls}
+                          </h3>
+                          <table className="report-data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
+                            <thead>
+                              <tr style={{ backgroundColor: '#f1f5f9' }}>
+                                <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', width: '28px' }}>No</th>
+                                <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>Tanggal</th>
+                                <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>Jam</th>
+                                <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>Kelas</th>
+                                <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>Mata Pelajaran</th>
+                                <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Nama Siswa</th>
+                                <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>Status</th>
+                                <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Keterangan</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {clsMonitoring.chronology.length === 0 ? (
+                                <tr>
+                                  <td colSpan={8} style={{ border: '1px solid #000', padding: '10px', textAlign: 'center', color: '#64748b' }}>
+                                    Belum ada catatan ketidakhadiran di kelas {cls} pada periode filter ini.
+                                  </td>
+                                </tr>
+                              ) : (
+                                clsMonitoring.chronology.map((c, idx) => (
+                                  <tr key={`${c.date}-${c.nis}-${idx}`}>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>{idx + 1}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{formatShortDateId(c.date)}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{c.jamKe}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{c.className}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{c.subject}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{c.studentName}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', fontWeight: 700 }}>{c.status}</td>
+                                    <td style={{ border: '1px solid #000', padding: '4px 6px' }}>{c.note}</td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* 5. Rekap Nilai Mapel per Kelas */}
+                  {sheet.reportType === 'grades' && cls && (() => {
+                    const classGradeSubjects = getSubjectsForClassSheet(cls);
+                    const visibleSubjects = classGradeSubjects.filter((subj) => {
+                      const { rows } = getGradeBlockForClassAndSubject(cls, subj);
+                      return rows.some((r) => r.avg !== null) || classGradeSubjects.length === 1;
+                    });
+                    return (
+                      <div style={{ marginBottom: '20px' }}>
+                        {visibleSubjects.length === 0 ? (
+                          <div style={{ border: '1px solid #000', padding: '12px', textAlign: 'center', fontSize: '9pt', color: '#64748b' }}>
+                            Belum ada nilai tercatat untuk kelas {cls} pada mata pelajaran terpilih.
+                          </div>
+                        ) : (
+                          visibleSubjects.map((subj) => {
+                            const { rows } = getGradeBlockForClassAndSubject(cls, subj);
+                            return (
+                              <div key={`${cls}-${subj}`} style={{ marginBottom: '16px' }}>
+                                <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
+                                  Rekap Matriks Nilai — Kelas {cls} ({subj})
+                                </h3>
+                                <table className="report-data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
+                                  <thead>
+                                    <tr style={{ backgroundColor: '#f1f5f9' }}>
+                                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', width: '30px' }}>No</th>
+                                      <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>NIS</th>
+                                      <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>NISN</th>
+                                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Nama Siswa</th>
+                                      {settings.masterExamTypes.map((ex) => (
+                                        <th key={ex} style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', whiteSpace: 'nowrap' }}>
+                                          {ex}
+                                        </th>
+                                      ))}
+                                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>Rata-rata</th>
+                                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left', whiteSpace: 'nowrap' }}>Status</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {rows.length === 0 ? (
+                                      <tr>
+                                        <td
+                                          colSpan={6 + settings.masterExamTypes.length}
+                                          style={{ border: '1px solid #000', padding: '10px', textAlign: 'center', color: '#64748b' }}
+                                        >
+                                          Belum ada siswa di kelas {cls}.
+                                        </td>
+                                      </tr>
+                                    ) : (
+                                      rows.map((r) => (
+                                        <tr key={r.nis + r.name}>
+                                          <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>{r.no}</td>
+                                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.nis}</td>
+                                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }} className="tabular-nums">{r.nisn}</td>
+                                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.name}</td>
+                                          {settings.masterExamTypes.map((ex) => (
+                                            <td key={ex} style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>
+                                              {r.scores[ex] !== null ? r.scores[ex] : '-'}
+                                            </td>
+                                          ))}
+                                          <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', fontWeight: 700 }}>
+                                            {r.avg !== null ? r.avg.toFixed(1) : '-'}
+                                          </td>
+                                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.status}</td>
+                                        </tr>
+                                      ))
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
                             );
                           })
                         )}
-                      </tbody>
-                    </table>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+                      </div>
+                    );
+                  })()}
 
-          {/* 3. Rekap Matriks Nilai */}
-          {includeGrades && (
-            <div style={{ marginBottom: '24px' }}>
-              {selectedClasses.map((cls) =>
-                activeGradeSubjects.map((subj) => {
-                  const { rows } = getGradeBlockForClassAndSubject(cls, subj);
-                  const hasAnyScore = rows.some((r) => r.avg !== null);
-                  if (!hasAnyScore && (!subjectFilter || subjectFilter === 'ALL')) return null;
-
-                  return (
-                    <div key={`${cls}-${subj}`} style={{ marginBottom: '18px' }}>
-                      <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
-                        Rekap Matriks Nilai — Kelas {cls} ({subj})
-                      </h3>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
-                        <thead>
-                          <tr style={{ backgroundColor: '#f1f5f9' }}>
-                            <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', width: '30px' }}>No</th>
-                            <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>NIS</th>
-                            <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Nama Siswa</th>
-                            {settings.masterExamTypes.map((ex) => (
-                              <th key={ex} style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', whiteSpace: 'nowrap' }}>
-                                {ex}
-                              </th>
-                            ))}
-                            <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>Rata-rata</th>
-                            <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left', whiteSpace: 'nowrap' }}>Status</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {rows.length === 0 ? (
-                            <tr>
-                              <td
-                                colSpan={5 + settings.masterExamTypes.length}
-                                style={{ border: '1px solid #000', padding: '10px', textAlign: 'center', color: '#64748b' }}
-                              >
-                                Belum ada siswa di kelas {cls}.
-                              </td>
-                            </tr>
-                          ) : (
-                            rows.map((r) => (
-                              <tr key={r.nis + r.name}>
-                                <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>{r.no}</td>
-                                <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.nis}</td>
-                                <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.name}</td>
-                                {settings.masterExamTypes.map((ex) => (
-                                  <td key={ex} style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>
-                                    {r.scores[ex] !== null ? r.scores[ex] : '-'}
-                                  </td>
-                                ))}
-                                <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', fontWeight: 700 }}>
-                                  {r.avg !== null ? r.avg.toFixed(1) : '-'}
-                                </td>
-                                <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.status}</td>
-                              </tr>
-                            ))
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          )}
-
-          {/* 3. Rekap Presensi Bulanan (Presensi) */}
-          {includeAttendanceMonthly && (
-            <div style={{ marginBottom: '24px' }}>
-              {selectedClasses.map((cls) => {
-                const { months, rows, classAvgPct } = getMonthlyAttendanceForClass(cls);
-                return (
-                  <div key={`monthly-${cls}`} style={{ marginBottom: '18px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px' }}>
-                      <h3 style={{ fontSize: '10pt', fontWeight: 700, margin: 0 }}>
-                        Rekap Presensi Bulanan — Kelas {cls}
-                      </h3>
-                      <span style={{ fontSize: '8pt', color: '#334155' }}>
-                        Rata-rata Kehadiran Kelas: {classAvgPct !== null ? `${classAvgPct.toFixed(1)}%` : '-'}
-                      </span>
-                    </div>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
-                      <thead>
-                        <tr style={{ backgroundColor: '#f1f5f9' }}>
-                          <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', width: '28px' }}>No</th>
-                          <th style={{ border: '1px solid #000', padding: '4px', whiteSpace: 'nowrap' }}>NIS</th>
-                          <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Nama Siswa</th>
-                          {months.map((m) => (
-                            <th key={m} style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', whiteSpace: 'nowrap' }}>
-                              {formatMonthLabelId(m)}
-                            </th>
-                          ))}
-                          <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', whiteSpace: 'nowrap' }}>Sesi</th>
-                          <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>H</th>
-                          <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>S</th>
-                          <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>I</th>
-                          <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>A</th>
-                          <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>D</th>
-                          <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>% Hadir</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {rows.length === 0 ? (
-                          <tr>
-                            <td colSpan={10 + months.length} style={{ border: '1px solid #000', padding: '10px', textAlign: 'center', color: '#64748b' }}>
-                              Belum ada siswa di kelas {cls}.
-                            </td>
-                          </tr>
+                  {/* 6. Ketuntasan & Remedial (< KKM 75) per Kelas */}
+                  {sheet.reportType === 'grades_remedial' && cls && (() => {
+                    const classGradeSubjects = getSubjectsForClassSheet(cls);
+                    const visibleSubjects = classGradeSubjects.filter((subj) => {
+                      const rem = getRemedialDataForClassAndSubject(cls, subj);
+                      return rem.assessedCount > 0 || classGradeSubjects.length === 1;
+                    });
+                    return (
+                      <div style={{ marginBottom: '20px' }}>
+                        {visibleSubjects.length === 0 ? (
+                          <div style={{ border: '1px solid #000', padding: '12px', textAlign: 'center', fontSize: '9pt', color: '#64748b' }}>
+                            Belum ada data ketuntasan &amp; remedial untuk kelas {cls} pada mata pelajaran terpilih.
+                          </div>
                         ) : (
-                          rows.map((r) => (
-                            <tr key={`m-${cls}-${r.nis}-${r.no}`}>
-                              <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }} className="tabular-nums">{r.no}</td>
-                              <td style={{ border: '1px solid #000', padding: '4px', whiteSpace: 'nowrap' }} className="tabular-nums">{r.nis}</td>
-                              <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.name}</td>
-                              {months.map((m) => {
-                                const mc = r.monthCounts[m];
-                                return (
-                                  <td key={m} style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }} className="tabular-nums">
-                                    {mc && mc.total > 0 ? `${mc.h}/${mc.total}` : '-'}
-                                  </td>
-                                );
-                              })}
-                              <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }} className="tabular-nums">{r.totalMeetings}</td>
-                              <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{r.totals.H}</td>
-                              <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{r.totals.S}</td>
-                              <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{r.totals.I}</td>
-                              <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{r.totals.A}</td>
-                              <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{r.totals.D}</td>
-                              <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', fontWeight: 700 }}>
-                                {r.pct !== null ? `${r.pct.toFixed(0)}%` : '-'}
-                              </td>
-                            </tr>
-                          ))
+                          visibleSubjects.map((subj) => {
+                            const rem = getRemedialDataForClassAndSubject(cls, subj);
+                            return (
+                              <div key={`rem-${cls}-${subj}`} style={{ marginBottom: '16px' }}>
+                                <table data-layout-table="true" style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '6px' }}>
+                                  <tbody>
+                                    <tr>
+                                      <td style={{ border: 'none', padding: 0, textAlign: 'left', verticalAlign: 'baseline' }}>
+                                        <h3 style={{ fontSize: '10pt', fontWeight: 700, margin: 0 }}>
+                                          Ketuntasan &amp; Remedial (&lt; KKM 75) — Kelas {cls} ({subj})
+                                        </h3>
+                                      </td>
+                                      <td style={{ border: 'none', padding: 0, textAlign: 'right', verticalAlign: 'baseline', fontSize: '8pt', color: '#334155' }}>
+                                        Daya Serap: <strong>{rem.dayaSerap !== null ? `${rem.dayaSerap.toFixed(0)}%` : '-'}</strong> · Tuntas: {rem.tuntasCount}/{rem.assessedCount} · Remedial: {rem.remedialCount} · Rata Kelas: {rem.classAvg !== null ? rem.classAvg.toFixed(1) : '-'}
+                                      </td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                                <table className="report-data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
+                                  <thead>
+                                    <tr style={{ backgroundColor: '#f1f5f9' }}>
+                                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', width: '28px' }}>No</th>
+                                      <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>NIS</th>
+                                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Nama Siswa</th>
+                                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>Tertinggi</th>
+                                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>Terendah</th>
+                                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Komponen &lt; KKM</th>
+                                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right' }}>Rata-rata</th>
+                                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right' }}>Selisih</th>
+                                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Rekomendasi</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {rem.assessedCount === 0 ? (
+                                      <tr>
+                                        <td colSpan={9} style={{ border: '1px solid #000', padding: '10px', textAlign: 'center', color: '#64748b' }}>
+                                          Belum ada nilai tercatat untuk kelas {cls} ({subj}).
+                                        </td>
+                                      </tr>
+                                    ) : rem.remedialList.length === 0 ? (
+                                      <tr>
+                                        <td colSpan={9} style={{ border: '1px solid #000', padding: '10px', textAlign: 'center', color: '#15803d', fontWeight: 600 }}>
+                                          Seluruh {rem.assessedCount} siswa yang dinilai telah mencapai KKM (&ge; 75) — Daya serap 100%.
+                                        </td>
+                                      </tr>
+                                    ) : (
+                                      rem.remedialList.map((r) => (
+                                        <tr key={`${cls}-${subj}-rem-${r.nis}-${r.no}`}>
+                                          <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>{r.no}</td>
+                                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.nis}</td>
+                                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.name}</td>
+                                          <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>{r.maxScore}</td>
+                                          <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>{r.minScore}</td>
+                                          <td style={{ border: '1px solid #000', padding: '4px 6px' }}>{r.belowItems}</td>
+                                          <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', fontWeight: 700 }}>{r.avg.toFixed(1)}</td>
+                                          <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right' }}>-{r.gap.toFixed(1)}</td>
+                                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.rekomendasi}</td>
+                                        </tr>
+                                      ))
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
+                            );
+                          })
                         )}
-                      </tbody>
-                    </table>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+                      </div>
+                    );
+                  })()}
 
-          {/* 4. Monitoring S/I/A/D (Presensi) */}
-          {includeAttendanceMonitoring && (
-            <div style={{ marginBottom: '24px' }}>
-              <div style={{ marginBottom: '14px' }}>
-                <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
-                  Monitoring S/I/A/D — Rekap Akumulasi Ketidakhadiran Siswa
-                </h3>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
-                  <thead>
-                    <tr style={{ backgroundColor: '#f1f5f9' }}>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', width: '28px' }}>No</th>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>NIS</th>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Nama Siswa</th>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>Kelas</th>
-                      <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>S</th>
-                      <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>I</th>
-                      <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>A</th>
-                      <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>D</th>
-                      <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>Total</th>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left', whiteSpace: 'nowrap' }}>Status Pembinaan</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {monitoringAbsenceData.summary.length === 0 ? (
-                      <tr>
-                        <td colSpan={10} style={{ border: '1px solid #000', padding: '10px', textAlign: 'center', color: '#64748b' }}>
-                          Seluruh siswa tercatat Hadir (H) 100% pada periode filter ini.
-                        </td>
-                      </tr>
-                    ) : (
-                      monitoringAbsenceData.summary.map((it, idx) => (
-                        <tr key={it.studentId}>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>{idx + 1}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{it.nis}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{it.name}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{it.className}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{it.S}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{it.I}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', fontWeight: 700 }}>{it.A}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{it.D}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', fontWeight: 700 }}>{it.total}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{it.action}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              <div>
-                <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
-                  Kronologi Ketidakhadiran (S/I/A/D)
-                </h3>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
-                  <thead>
-                    <tr style={{ backgroundColor: '#f1f5f9' }}>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', width: '28px' }}>No</th>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>Tanggal</th>
-                      <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>Jam</th>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>Kelas</th>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>Mata Pelajaran</th>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Nama Siswa</th>
-                      <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>Status</th>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Keterangan</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {monitoringAbsenceData.chronology.length === 0 ? (
-                      <tr>
-                        <td colSpan={8} style={{ border: '1px solid #000', padding: '10px', textAlign: 'center', color: '#64748b' }}>
-                          Belum ada catatan ketidakhadiran pada periode filter ini.
-                        </td>
-                      </tr>
-                    ) : (
-                      monitoringAbsenceData.chronology.map((c, idx) => (
-                        <tr key={`${c.date}-${c.nis}-${idx}`}>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>{idx + 1}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{formatShortDateId(c.date)}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{c.jamKe}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{c.className}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{c.subject}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{c.studentName}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', fontWeight: 700 }}>{c.status}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px' }}>{c.note}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* 6. Ketuntasan & Remedial (< KKM 75) */}
-          {includeGradesRemedial && (
-            <div style={{ marginBottom: '24px' }}>
-              {selectedClasses.map((cls) =>
-                activeGradeSubjects.map((subj) => {
-                  const rem = getRemedialDataForClassAndSubject(cls, subj);
-                  if (rem.assessedCount === 0 && (!subjectFilter || subjectFilter === 'ALL')) return null;
-
-                  return (
-                    <div key={`rem-${cls}-${subj}`} style={{ marginBottom: '18px' }}>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'baseline', gap: '8px', marginBottom: '6px' }}>
-                        <h3 style={{ fontSize: '10pt', fontWeight: 700, margin: 0 }}>
-                          Ketuntasan & Remedial (&lt; KKM 75) — Kelas {cls} ({subj})
+                  {/* 7. Leger Gabungan Kelas */}
+                  {sheet.reportType === 'grades_leger' && cls && (() => {
+                    const { subjects, rows } = getCombinedLegerForClass(cls);
+                    return (
+                      <div style={{ marginBottom: '20px' }}>
+                        <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
+                          Leger Gabungan Nilai Lintas Mapel &amp; Peringkat — Kelas {cls}
                         </h3>
-                        <span style={{ fontSize: '8pt', color: '#334155' }}>
-                          Daya Serap: <strong>{rem.dayaSerap !== null ? `${rem.dayaSerap.toFixed(0)}%` : '-'}</strong> · Tuntas: {rem.tuntasCount}/{rem.assessedCount} · Remedial: {rem.remedialCount} · Rata Kelas: {rem.classAvg !== null ? rem.classAvg.toFixed(1) : '-'}
-                        </span>
-                      </div>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
-                        <thead>
-                          <tr style={{ backgroundColor: '#f1f5f9' }}>
-                            <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', width: '28px' }}>No</th>
-                            <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>NIS</th>
-                            <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Nama Siswa</th>
-                            <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>Tertinggi</th>
-                            <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>Terendah</th>
-                            <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Komponen &lt; KKM</th>
-                            <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right' }}>Rata-rata</th>
-                            <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right' }}>Selisih</th>
-                            <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Rekomendasi</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {rem.assessedCount === 0 ? (
-                            <tr>
-                              <td colSpan={9} style={{ border: '1px solid #000', padding: '10px', textAlign: 'center', color: '#64748b' }}>
-                                Belum ada nilai tercatat untuk kelas {cls} ({subj}).
-                              </td>
-                            </tr>
-                          ) : rem.remedialList.length === 0 ? (
-                            <tr>
-                              <td colSpan={9} style={{ border: '1px solid #000', padding: '10px', textAlign: 'center', color: '#15803d', fontWeight: 600 }}>
-                                Seluruh {rem.assessedCount} siswa yang dinilai telah mencapai KKM (&ge; 75) — Daya serap 100%.
-                              </td>
-                            </tr>
-                          ) : (
-                            rem.remedialList.map((r) => (
-                              <tr key={`${cls}-${subj}-rem-${r.nis}-${r.no}`}>
-                                <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>{r.no}</td>
-                                <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.nis}</td>
-                                <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.name}</td>
-                                <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>{r.maxScore}</td>
-                                <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>{r.minScore}</td>
-                                <td style={{ border: '1px solid #000', padding: '4px 6px' }}>{r.belowItems}</td>
-                                <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', fontWeight: 700 }}>{r.avg.toFixed(1)}</td>
-                                <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right' }}>-{r.gap.toFixed(1)}</td>
-                                <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.rekomendasi}</td>
-                              </tr>
-                            ))
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          )}
-
-          {/* 7. Leger Gabungan Kelas (Akademik) */}
-          {includeGradesLeger && (
-            <div style={{ marginBottom: '24px' }}>
-              {selectedClasses.map((cls) => {
-                const { subjects, rows } = getCombinedLegerForClass(cls);
-                return (
-                  <div key={`leger-${cls}`} style={{ marginBottom: '18px' }}>
-                    <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
-                      Leger Gabungan Nilai Lintas Mapel & Peringkat — Kelas {cls}
-                    </h3>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '7.5pt' }}>
-                      <thead>
-                        <tr style={{ backgroundColor: '#f1f5f9' }}>
-                          <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', width: '42px' }}>Rank</th>
-                          <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>NIS</th>
-                          <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Nama Siswa</th>
-                          {subjects.map((subj) => (
-                            <th key={subj} style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', whiteSpace: 'nowrap' }}>
-                              {subj}
-                            </th>
-                          ))}
-                          <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>Jumlah</th>
-                          <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>Rata-rata</th>
-                          <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left', whiteSpace: 'nowrap' }}>Ket.</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {rows.length === 0 ? (
-                          <tr>
-                            <td colSpan={6 + subjects.length} style={{ border: '1px solid #000', padding: '10px', textAlign: 'center', color: '#64748b' }}>
-                              Belum ada siswa di kelas {cls}.
-                            </td>
-                          </tr>
-                        ) : (
-                          rows.map((r) => (
-                            <tr key={r.id}>
-                              <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', fontWeight: 700 }}>
-                                {r.rank ?? '-'}
-                              </td>
-                              <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.nis}</td>
-                              <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.name}</td>
+                        <table className="report-data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '7.5pt' }}>
+                          <thead>
+                            <tr style={{ backgroundColor: '#f1f5f9' }}>
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', width: '42px' }}>Rank</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>NIS</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Nama Siswa</th>
                               {subjects.map((subj) => (
-                                <td key={subj} style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>
-                                  {r.subjAvgs[subj] !== null ? (r.subjAvgs[subj] as number).toFixed(1) : '-'}
-                                </td>
+                                <th key={subj} style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', whiteSpace: 'nowrap' }}>
+                                  {subj}
+                                </th>
                               ))}
-                              <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right' }}>
-                                {r.totalScore !== null ? r.totalScore.toFixed(1) : '-'}
-                              </td>
-                              <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', fontWeight: 700 }}>
-                                {r.overallAvg !== null ? r.overallAvg.toFixed(1) : '-'}
-                              </td>
-                              <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.status}</td>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>Jumlah</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>Rata-rata</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left', whiteSpace: 'nowrap' }}>Ket.</th>
                             </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* 8. Daftar Peserta Didik (Kesiswaan) */}
-          {includeStudentsRoster && (
-            <div style={{ marginBottom: '24px' }}>
-              <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
-                Daftar Induk Peserta Didik & Wali Kelas ({studentRosterRows.length} Siswa)
-              </h3>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '7.5pt' }}>
-                <thead>
-                  <tr style={{ backgroundColor: '#f1f5f9' }}>
-                    <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', width: '26px' }}>No</th>
-                    <th style={{ border: '1px solid #000', padding: '4px 5px', whiteSpace: 'nowrap' }}>NIS / NISN</th>
-                    <th style={{ border: '1px solid #000', padding: '4px 5px', textAlign: 'left' }}>Nama Siswa</th>
-                    <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>L/P</th>
-                    <th style={{ border: '1px solid #000', padding: '4px 5px', whiteSpace: 'nowrap' }}>Kelas</th>
-                    <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>Abs</th>
-                    <th style={{ border: '1px solid #000', padding: '4px 5px', textAlign: 'left' }}>Tempat, Tgl Lahir</th>
-                    <th style={{ border: '1px solid #000', padding: '4px 5px', whiteSpace: 'nowrap' }}>No. HP</th>
-                    <th style={{ border: '1px solid #000', padding: '4px 5px', textAlign: 'left' }}>Wali Kelas</th>
-                    <th style={{ border: '1px solid #000', padding: '4px 5px', textAlign: 'left' }}>Guru BK</th>
-                    <th style={{ border: '1px solid #000', padding: '4px 5px', textAlign: 'left' }}>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {studentRosterRows.length === 0 ? (
-                    <tr>
-                      <td colSpan={11} style={{ border: '1px solid #000', padding: '10px', textAlign: 'center', color: '#64748b' }}>
-                        Belum ada data peserta didik pada kelas terpilih.
-                      </td>
-                    </tr>
-                  ) : (
-                    studentRosterRows.map((st, idx) => (
-                      <tr key={st.id}>
-                        <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{idx + 1}</td>
-                        <td style={{ border: '1px solid #000', padding: '4px 5px', whiteSpace: 'nowrap' }}>
-                          {st.nis} / {st.nisn || '-'}
-                        </td>
-                        <td style={{ border: '1px solid #000', padding: '4px 5px', whiteSpace: 'nowrap', fontWeight: 600 }}>{st.name}</td>
-                        <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{st.gender}</td>
-                        <td style={{ border: '1px solid #000', padding: '4px 5px', whiteSpace: 'nowrap' }}>{st.className}</td>
-                        <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{st.absentNo || '-'}</td>
-                        <td style={{ border: '1px solid #000', padding: '4px 5px' }}>
-                          {st.birthPlace || '-'}, {st.birthDate || '-'}
-                        </td>
-                        <td style={{ border: '1px solid #000', padding: '4px 5px', whiteSpace: 'nowrap' }}>{st.phone || '-'}</td>
-                        <td style={{ border: '1px solid #000', padding: '4px 5px' }}>{st.homeroomTeacher || '-'}</td>
-                        <td style={{ border: '1px solid #000', padding: '4px 5px' }}>{st.counselorTeacher || '-'}</td>
-                        <td style={{ border: '1px solid #000', padding: '4px 5px', whiteSpace: 'nowrap' }}>{st.status}</td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {/* 9. Aktivitas & Penilaian Guru (Pimpinan) */}
-          {includeTeacherActivity && (
-            <div style={{ marginBottom: '24px' }}>
-              <div style={{ marginBottom: '14px' }}>
-                <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
-                  Ringkasan Aktivitas & Penilaian Kinerja Guru
-                </h3>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
-                  <thead>
-                    <tr style={{ backgroundColor: '#f1f5f9' }}>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', width: '28px' }}>No</th>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>NIP</th>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Nama Guru</th>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Jabatan / Mapel</th>
-                      <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>Jadwal</th>
-                      <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>Jurnal</th>
-                      <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>% Hadir</th>
-                      <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>Dinilai</th>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right' }}>Rata Nilai</th>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Status Kinerja</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {teacherActivityData.summary.map((t) => (
-                      <tr key={`${t.no}-${t.name}`}>
-                        <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>{t.no}</td>
-                        <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{t.nip}</td>
-                        <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap', fontWeight: 600 }}>{t.name}</td>
-                        <td style={{ border: '1px solid #000', padding: '4px 6px' }}>
-                          {t.position} ({t.subject})
-                        </td>
-                        <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{t.scheduleCount}</td>
-                        <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', fontWeight: 700 }}>{t.journalCount}</td>
-                        <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>
-                          {t.avgAttendance !== null ? `${t.avgAttendance.toFixed(0)}%` : '-'}
-                        </td>
-                        <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{t.assessedStudents}</td>
-                        <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right' }}>
-                          {t.avgGrade !== null ? t.avgGrade.toFixed(1) : '-'}
-                        </td>
-                        <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{t.kinerja}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <div>
-                <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
-                  Riwayat Kinerja & Pelaksanaan KBM Terbaru
-                </h3>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
-                  <thead>
-                    <tr style={{ backgroundColor: '#f1f5f9' }}>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', width: '28px' }}>No</th>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>Tanggal</th>
-                      <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>Jam</th>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>Kelas</th>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>Mata Pelajaran</th>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Materi Pokok</th>
-                      <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right' }}>% Hadir</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {teacherActivityData.recentKbm.length === 0 ? (
-                      <tr>
-                        <td colSpan={7} style={{ border: '1px solid #000', padding: '10px', textAlign: 'center', color: '#64748b' }}>
-                          Belum ada riwayat pelaksanaan KBM pada periode filter ini.
-                        </td>
-                      </tr>
-                    ) : (
-                      teacherActivityData.recentKbm.map((r) => (
-                        <tr key={`kbm-${r.no}-${r.date}-${r.className}`}>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>{r.no}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{formatShortDateId(r.date)}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{r.jamKe}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.className}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.subject}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px' }}>{r.topic}</td>
-                          <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', fontWeight: 700 }}>
-                            {r.pct.toFixed(0)}%
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* 10. Laporan Grafis & Diagram (Pimpinan) */}
-          {includeCharts && (
-            <div style={{ marginBottom: '20px' }}>
-              <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '8px' }}>
-                Laporan Grafis &amp; Diagram Analisis KBM
-              </h3>
-              {chartCards.length === 0 ? (
-                <div
-                  style={{
-                    border: '1px dashed #94a3b8',
-                    padding: '16px',
-                    textAlign: 'center',
-                    fontSize: '9pt',
-                    color: '#64748b',
-                  }}
-                >
-                  Belum ada jenis diagram grafik yang dipilih pada panel filter di atas.
-                </div>
-              ) : (
-                <div
-                  data-chart-grid="true"
-                  data-chart-cols={chartCols}
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: `repeat(${chartCols}, minmax(0, 1fr))`,
-                    gap: '12px',
-                  }}
-                >
-                  {chartCards.map((card) => (
-                    <div
-                      key={card.id}
-                      data-chart-card="true"
-                      className="print-avoid-break"
-                      style={{
-                        border: '1px solid #000000',
-                        backgroundColor: '#ffffff',
-                        padding: '8px',
-                      }}
-                    >
-                      <div style={{ fontSize: '8.5pt', fontWeight: 700, color: '#000000', lineHeight: 1.25 }}>
-                        {card.title}
+                          </thead>
+                          <tbody>
+                            {rows.length === 0 ? (
+                              <tr>
+                                <td colSpan={6 + subjects.length} style={{ border: '1px solid #000', padding: '10px', textAlign: 'center', color: '#64748b' }}>
+                                  Belum ada siswa di kelas {cls}.
+                                </td>
+                              </tr>
+                            ) : (
+                              rows.map((r) => (
+                                <tr key={r.id}>
+                                  <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', fontWeight: 700 }}>
+                                    {r.rank ?? '-'}
+                                  </td>
+                                  <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.nis}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.name}</td>
+                                  {subjects.map((subj) => (
+                                    <td key={subj} style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>
+                                      {r.subjAvgs[subj] !== null ? (r.subjAvgs[subj] as number).toFixed(1) : '-'}
+                                    </td>
+                                  ))}
+                                  <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right' }}>
+                                    {r.totalScore !== null ? r.totalScore.toFixed(1) : '-'}
+                                  </td>
+                                  <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', fontWeight: 700 }}>
+                                    {r.overallAvg !== null ? r.overallAvg.toFixed(1) : '-'}
+                                  </td>
+                                  <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.status}</td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
                       </div>
-                      <div style={{ fontSize: '7pt', color: '#475569', marginTop: '2px', marginBottom: '6px' }}>
-                        {card.chartKind} · {card.subtitle}
-                      </div>
-                      {card.pngDataUrl && (
-                        <img
-                          src={card.pngDataUrl}
-                          alt={card.title}
-                          style={{ width: '100%', height: 'auto', display: 'block' }}
-                        />
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+                    );
+                  })()}
 
-          {/* Blok Pengesahan (Tanda Tangan + Stempel + Posisi Fleksibel & Seret Bebas) */}
-          {(showTtdKepsek || showTtdGuru) && (
-            <div className="print-avoid-break" style={{ marginTop: '24px', paddingTop: '8px' }}>
-              {sigPos.preset === 'bebas' ? (
-                <div
-                  ref={sigCanvasRef}
-                  data-sig-canvas="true"
-                  style={{
-                    position: 'relative',
-                    minHeight: `${Math.max(215, Math.max(sigPos.principalY, sigPos.teacherY) + 155)}px`,
-                    width: '100%',
-                  }}
-                >
-                  {showTtdKepsek && (
-                    <div
-                      data-sig-block="kepsek"
-                      onPointerDown={(e) => handleSigPointerDown('kepsek', e)}
-                      title="Seret teks blok untuk mengatur posisi Kepala Sekolah"
-                      style={{
-                        position: 'absolute',
-                        left: `${sigPos.principalX}%`,
-                        top: `${sigPos.principalY}px`,
-                        width: '220px',
-                        cursor:
-                          activeInteraction?.kind === 'block' &&
-                          activeInteraction.target === 'kepsek'
-                            ? 'grabbing'
-                            : 'grab',
-                        userSelect: 'none',
-                        touchAction: 'none',
-                        padding: '4px',
-                        borderRadius: '6px',
-                      }}
-                      className="group hover:outline-1 hover:outline-dashed hover:outline-indigo-500"
-                    >
-                      <span
-                        data-export-ignore="true"
-                        className="no-print opacity-0 group-hover:opacity-100 transition-opacity absolute -top-5 left-0 px-1.5 py-0.5 rounded bg-indigo-600 text-white text-[10px] font-sans font-semibold whitespace-nowrap pointer-events-none"
-                      >
-                        Geser Blok ({sigPos.principalX}%, {sigPos.principalY}px)
-                      </span>
-                      {renderSigCard(
-                        'kepsek',
-                        'Mengetahui,',
-                        settings.principalTitle,
-                        settings.principalName,
-                        settings.principalNip,
-                        showSignatureImage ? settings.principalSignatureImage : '',
-                        stampOnKepsek,
-                        kepsekSigSizePx,
-                        kepsekSigOffsetX,
-                        kepsekSigOffsetY
+                  {/* 8. Daftar Peserta Didik per Kelas */}
+                  {sheet.reportType === 'students_roster' && cls && (() => {
+                    const clsStudents = studentRosterRows.filter((s) => s.className === cls);
+                    return (
+                      <div style={{ marginBottom: '20px' }}>
+                        <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
+                          Daftar Induk Peserta Didik &amp; Wali Kelas — Kelas {cls} ({clsStudents.length} Siswa)
+                        </h3>
+                        <table className="report-data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '7.5pt' }}>
+                          <thead>
+                            <tr style={{ backgroundColor: '#f1f5f9' }}>
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', width: '26px' }}>No</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 5px', whiteSpace: 'nowrap' }}>NIS / NISN</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 5px', textAlign: 'left' }}>Nama Siswa</th>
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>L/P</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 5px', whiteSpace: 'nowrap' }}>Kelas</th>
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>Abs</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 5px', textAlign: 'left' }}>Tempat, Tgl Lahir</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 5px', whiteSpace: 'nowrap' }}>No. HP</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 5px', textAlign: 'left' }}>Wali Kelas</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 5px', textAlign: 'left' }}>Guru BK</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 5px', textAlign: 'left' }}>Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {clsStudents.length === 0 ? (
+                              <tr>
+                                <td colSpan={11} style={{ border: '1px solid #000', padding: '10px', textAlign: 'center', color: '#64748b' }}>
+                                  Belum ada data peserta didik di kelas {cls}.
+                                </td>
+                              </tr>
+                            ) : (
+                              clsStudents.map((st, idx) => (
+                                <tr key={st.id}>
+                                  <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{idx + 1}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px 5px', whiteSpace: 'nowrap' }}>
+                                    {st.nis} / {st.nisn || '-'}
+                                  </td>
+                                  <td style={{ border: '1px solid #000', padding: '4px 5px', whiteSpace: 'nowrap', fontWeight: 600 }}>{st.name}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{st.gender}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px 5px', whiteSpace: 'nowrap' }}>{st.className}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{st.absentNo || '-'}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px 5px' }}>
+                                    {st.birthPlace || '-'}, {st.birthDate || '-'}
+                                  </td>
+                                  <td style={{ border: '1px solid #000', padding: '4px 5px', whiteSpace: 'nowrap' }}>{st.phone || '-'}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px 5px' }}>{st.homeroomTeacher || '-'}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px 5px' }}>{st.counselorTeacher || '-'}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px 5px', whiteSpace: 'nowrap' }}>{st.status}</td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })()}
+
+                  {/* 9. Aktivitas & Penilaian Guru (Pimpinan) */}
+                  {sheet.reportType === 'teacher_activity' && (
+                    <div style={{ marginBottom: '20px' }}>
+                      <div style={{ marginBottom: '14px' }}>
+                        <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
+                          Ringkasan Aktivitas &amp; Penilaian Kinerja Guru
+                        </h3>
+                        <table className="report-data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
+                          <thead>
+                            <tr style={{ backgroundColor: '#f1f5f9' }}>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', width: '28px' }}>No</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>NIP</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Nama Guru</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Jabatan / Mapel</th>
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>Jadwal</th>
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>Jurnal</th>
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>% Hadir</th>
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>Dinilai</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right' }}>Rata Nilai</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Status Kinerja</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {teacherActivityData.summary.map((t) => (
+                              <tr key={`${t.no}-${t.name}`}>
+                                <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>{t.no}</td>
+                                <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{t.nip}</td>
+                                <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap', fontWeight: 600 }}>{t.name}</td>
+                                <td style={{ border: '1px solid #000', padding: '4px 6px' }}>
+                                  {t.position} ({t.subject})
+                                </td>
+                                <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{t.scheduleCount}</td>
+                                <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center', fontWeight: 700 }}>{t.journalCount}</td>
+                                <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>
+                                  {t.avgAttendance !== null ? `${t.avgAttendance.toFixed(0)}%` : '-'}
+                                </td>
+                                <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{t.assessedStudents}</td>
+                                <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right' }}>
+                                  {t.avgGrade !== null ? t.avgGrade.toFixed(1) : '-'}
+                                </td>
+                                <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{t.kinerja}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <div>
+                        <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '6px' }}>
+                          Riwayat Kinerja &amp; Pelaksanaan KBM Terbaru
+                        </h3>
+                        <table className="report-data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '8pt' }}>
+                          <thead>
+                            <tr style={{ backgroundColor: '#f1f5f9' }}>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center', width: '28px' }}>No</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>Tanggal</th>
+                              <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>Jam</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>Kelas</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>Mata Pelajaran</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'left' }}>Materi Pokok</th>
+                              <th style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right' }}>% Hadir</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {teacherActivityData.recentKbm.length === 0 ? (
+                              <tr>
+                                <td colSpan={7} style={{ border: '1px solid #000', padding: '10px', textAlign: 'center', color: '#64748b' }}>
+                                  Belum ada riwayat pelaksanaan KBM pada periode filter ini.
+                                </td>
+                              </tr>
+                            ) : (
+                              teacherActivityData.recentKbm.map((r) => (
+                                <tr key={`kbm-${r.no}-${r.date}-${r.className}`}>
+                                  <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'center' }}>{r.no}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{formatShortDateId(r.date)}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px', textAlign: 'center' }}>{r.jamKe}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.className}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px 6px', whiteSpace: 'nowrap' }}>{r.subject}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px 6px' }}>{r.topic}</td>
+                                  <td style={{ border: '1px solid #000', padding: '4px 6px', textAlign: 'right', fontWeight: 700 }}>
+                                    {r.pct.toFixed(0)}%
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 10. Laporan Grafis & Diagram (Pimpinan) */}
+                  {sheet.reportType === 'charts' && (
+                    <div style={{ marginBottom: '20px' }}>
+                      <h3 style={{ fontSize: '10pt', fontWeight: 700, marginBottom: '8px' }}>
+                        Laporan Grafis &amp; Diagram Analisis KBM
+                      </h3>
+                      {chartCards.length === 0 ? (
+                        <div
+                          style={{
+                            border: '1px dashed #94a3b8',
+                            padding: '16px',
+                            textAlign: 'center',
+                            fontSize: '9pt',
+                            color: '#64748b',
+                          }}
+                        >
+                          Belum ada jenis diagram grafik yang dipilih pada panel filter di atas.
+                        </div>
+                      ) : (
+                        <div
+                          data-chart-grid="true"
+                          data-chart-cols={chartCols}
+                          style={{
+                            display: 'grid',
+                            gridTemplateColumns: `repeat(${chartCols}, minmax(0, 1fr))`,
+                            gap: '12px',
+                          }}
+                        >
+                          {chartCards.map((card) => (
+                            <div
+                              key={card.id}
+                              data-chart-card="true"
+                              className="print-avoid-break"
+                              style={{
+                                border: '1px solid #000000',
+                                backgroundColor: '#ffffff',
+                                padding: '8px',
+                              }}
+                            >
+                              <div style={{ fontSize: '8.5pt', fontWeight: 700, color: '#000000', lineHeight: 1.25 }}>
+                                {card.title}
+                              </div>
+                              <div style={{ fontSize: '7pt', color: '#475569', marginTop: '2px', marginBottom: '6px' }}>
+                                {card.chartKind} · {card.subtitle}
+                              </div>
+                              {card.pngDataUrl && (
+                                <img
+                                  src={card.pngDataUrl}
+                                  alt={card.title}
+                                  style={{ width: '100%', height: 'auto', display: 'block' }}
+                                />
+                              )}
+                            </div>
+                          ))}
+                        </div>
                       )}
                     </div>
                   )}
-                  {showTtdGuru && (
-                    <div
-                      data-sig-block="guru"
-                      onPointerDown={(e) => handleSigPointerDown('guru', e)}
-                      title="Seret teks blok untuk mengatur posisi Guru / Pemilik Akun"
-                      style={{
-                        position: 'absolute',
-                        left: `${sigPos.teacherX}%`,
-                        top: `${sigPos.teacherY}px`,
-                        width: '220px',
-                        cursor:
-                          activeInteraction?.kind === 'block' &&
-                          activeInteraction.target === 'guru'
-                            ? 'grabbing'
-                            : 'grab',
-                        userSelect: 'none',
-                        touchAction: 'none',
-                        padding: '4px',
-                        borderRadius: '6px',
-                      }}
-                      className="group hover:outline-1 hover:outline-dashed hover:outline-indigo-500"
-                    >
-                      <span
-                        data-export-ignore="true"
-                        className="no-print opacity-0 group-hover:opacity-100 transition-opacity absolute -top-5 left-0 px-1.5 py-0.5 rounded bg-indigo-600 text-white text-[10px] font-sans font-semibold whitespace-nowrap pointer-events-none"
-                      >
-                        Geser Blok ({sigPos.teacherX}%, {sigPos.teacherY}px)
-                      </span>
-                      {renderSigCard(
-                        'guru',
-                        `${settings.signatureLocation}, ${formatLongDateId(getTodayISO())}`,
-                        activeSigner.roleLabel,
-                        activeSigner.name,
-                        activeSigner.nip,
-                        showSignatureImage ? activeSigner.signatureImage : '',
-                        stampOnGuru,
-                        guruSigSizePx,
-                        guruSigOffsetX,
-                        guruSigOffsetY
-                      )}
-                    </div>
-                  )}
+
+                  {/* Blok Pengesahan per Lembaran */}
+                  {renderSignatureZone()}
                 </div>
-              ) : (
-                <div ref={sigCanvasRef} style={{ width: '100%' }}>
-                  {sigPos.preset === 'kiri' ? (
-                    <div style={{ paddingLeft: '16px' }}>
-                      {showTtdKepsek && (
-                        <div
-                          onPointerDown={(e) => handleSigPointerDown('kepsek', e)}
-                          title="Seret blok untuk menyesuaikan posisi"
-                          style={{ width: '220px', marginBottom: '20px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
-                          className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
-                        >
-                          {renderSigCard(
-                            'kepsek',
-                            'Mengetahui,',
-                            settings.principalTitle,
-                            settings.principalName,
-                            settings.principalNip,
-                            showSignatureImage ? settings.principalSignatureImage : '',
-                            stampOnKepsek,
-                            kepsekSigSizePx,
-                            kepsekSigOffsetX,
-                            kepsekSigOffsetY
-                          )}
-                        </div>
-                      )}
-                      {showTtdGuru && (
-                        <div
-                          onPointerDown={(e) => handleSigPointerDown('guru', e)}
-                          title="Seret blok untuk menyesuaikan posisi"
-                          style={{ width: '220px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
-                          className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
-                        >
-                          {renderSigCard(
-                            'guru',
-                            `${settings.signatureLocation}, ${formatLongDateId(getTodayISO())}`,
-                            activeSigner.roleLabel,
-                            activeSigner.name,
-                            activeSigner.nip,
-                            showSignatureImage ? activeSigner.signatureImage : '',
-                            stampOnGuru,
-                            guruSigSizePx,
-                            guruSigOffsetX,
-                            guruSigOffsetY
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ) : sigPos.preset === 'kanan' ? (
-                    <div style={{ marginLeft: 'auto', width: '240px' }}>
-                      {showTtdKepsek && (
-                        <div
-                          onPointerDown={(e) => handleSigPointerDown('kepsek', e)}
-                          title="Seret blok untuk menyesuaikan posisi"
-                          style={{ marginBottom: '20px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
-                          className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
-                        >
-                          {renderSigCard(
-                            'kepsek',
-                            'Mengetahui,',
-                            settings.principalTitle,
-                            settings.principalName,
-                            settings.principalNip,
-                            showSignatureImage ? settings.principalSignatureImage : '',
-                            stampOnKepsek,
-                            kepsekSigSizePx,
-                            kepsekSigOffsetX,
-                            kepsekSigOffsetY
-                          )}
-                        </div>
-                      )}
-                      {showTtdGuru && (
-                        <div
-                          onPointerDown={(e) => handleSigPointerDown('guru', e)}
-                          title="Seret blok untuk menyesuaikan posisi"
-                          style={{ cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
-                          className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
-                        >
-                          {renderSigCard(
-                            'guru',
-                            `${settings.signatureLocation}, ${formatLongDateId(getTodayISO())}`,
-                            activeSigner.roleLabel,
-                            activeSigner.name,
-                            activeSigner.nip,
-                            showSignatureImage ? activeSigner.signatureImage : '',
-                            stampOnGuru,
-                            guruSigSizePx,
-                            guruSigOffsetX,
-                            guruSigOffsetY
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ) : sigPos.preset === 'tengah' ? (
-                    <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'center' }}>
-                      <tbody>
-                        <tr>
-                          {showTtdKepsek && (
-                            <td style={{ verticalAlign: 'top', textAlign: 'center', border: 'none' }}>
-                              <div
-                                onPointerDown={(e) => handleSigPointerDown('kepsek', e)}
-                                title="Seret blok untuk menyesuaikan posisi"
-                                style={{ display: 'inline-block', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
-                                className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
-                              >
-                                {renderSigCard(
-                                  'kepsek',
-                                  'Mengetahui,',
-                                  settings.principalTitle,
-                                  settings.principalName,
-                                  settings.principalNip,
-                                  showSignatureImage ? settings.principalSignatureImage : '',
-                                  stampOnKepsek,
-                                  kepsekSigSizePx,
-                                  kepsekSigOffsetX,
-                                  kepsekSigOffsetY
-                                )}
-                              </div>
-                            </td>
-                          )}
-                          {showTtdGuru && (
-                            <td style={{ verticalAlign: 'top', textAlign: 'center', border: 'none' }}>
-                              <div
-                                onPointerDown={(e) => handleSigPointerDown('guru', e)}
-                                title="Seret blok untuk menyesuaikan posisi"
-                                style={{ display: 'inline-block', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
-                                className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
-                              >
-                                {renderSigCard(
-                                  'guru',
-                                  `${settings.signatureLocation}, ${formatLongDateId(getTodayISO())}`,
-                                  activeSigner.roleLabel,
-                                  activeSigner.name,
-                                  activeSigner.nip,
-                                  showSignatureImage ? activeSigner.signatureImage : '',
-                                  stampOnGuru,
-                                  guruSigSizePx,
-                                  guruSigOffsetX,
-                                  guruSigOffsetY
-                                )}
-                              </div>
-                            </td>
-                          )}
-                        </tr>
-                      </tbody>
-                    </table>
-                  ) : sigPos.preset === 'kanan-kiri' ? (
-                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                      <tbody>
-                        <tr>
-                          <td style={{ width: '50%', verticalAlign: 'top', paddingLeft: '16px', border: 'none' }}>
-                            {showTtdGuru && (
-                              <div
-                                onPointerDown={(e) => handleSigPointerDown('guru', e)}
-                                title="Seret blok untuk menyesuaikan posisi"
-                                style={{ width: '220px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
-                                className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
-                              >
-                                {renderSigCard(
-                                  'guru',
-                                  `${settings.signatureLocation}, ${formatLongDateId(getTodayISO())}`,
-                                  activeSigner.roleLabel,
-                                  activeSigner.name,
-                                  activeSigner.nip,
-                                  showSignatureImage ? activeSigner.signatureImage : '',
-                                  stampOnGuru,
-                                  guruSigSizePx,
-                                  guruSigOffsetX,
-                                  guruSigOffsetY
-                                )}
-                              </div>
-                            )}
-                          </td>
-                          <td style={{ width: '50%', verticalAlign: 'top', paddingLeft: '18%', border: 'none' }}>
-                            {showTtdKepsek && (
-                              <div
-                                onPointerDown={(e) => handleSigPointerDown('kepsek', e)}
-                                title="Seret blok untuk menyesuaikan posisi"
-                                style={{ width: '220px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
-                                className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
-                              >
-                                {renderSigCard(
-                                  'kepsek',
-                                  'Mengetahui,',
-                                  settings.principalTitle,
-                                  settings.principalName,
-                                  settings.principalNip,
-                                  showSignatureImage ? settings.principalSignatureImage : '',
-                                  stampOnKepsek,
-                                  kepsekSigSizePx,
-                                  kepsekSigOffsetX,
-                                  kepsekSigOffsetY
-                                )}
-                              </div>
-                            )}
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  ) : (
-                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                      <tbody>
-                        <tr>
-                          <td style={{ width: '50%', verticalAlign: 'top', paddingLeft: '16px', border: 'none' }}>
-                            {showTtdKepsek && (
-                              <div
-                                onPointerDown={(e) => handleSigPointerDown('kepsek', e)}
-                                title="Seret blok untuk menyesuaikan posisi"
-                                style={{ width: '220px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
-                                className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
-                              >
-                                {renderSigCard(
-                                  'kepsek',
-                                  'Mengetahui,',
-                                  settings.principalTitle,
-                                  settings.principalName,
-                                  settings.principalNip,
-                                  showSignatureImage ? settings.principalSignatureImage : '',
-                                  stampOnKepsek,
-                                  kepsekSigSizePx,
-                                  kepsekSigOffsetX,
-                                  kepsekSigOffsetY
-                                )}
-                              </div>
-                            )}
-                          </td>
-                          <td style={{ width: '50%', verticalAlign: 'top', paddingLeft: '18%', border: 'none' }}>
-                            {showTtdGuru && (
-                              <div
-                                onPointerDown={(e) => handleSigPointerDown('guru', e)}
-                                title="Seret blok untuk menyesuaikan posisi"
-                                style={{ width: '220px', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
-                                className="rounded hover:outline-1 hover:outline-dashed hover:outline-indigo-400"
-                              >
-                                {renderSigCard(
-                                  'guru',
-                                  `${settings.signatureLocation}, ${formatLongDateId(getTodayISO())}`,
-                                  activeSigner.roleLabel,
-                                  activeSigner.name,
-                                  activeSigner.nip,
-                                  showSignatureImage ? activeSigner.signatureImage : '',
-                                  stampOnGuru,
-                                  guruSigSizePx,
-                                  guruSigOffsetX,
-                                  guruSigOffsetY
-                                )}
-                              </div>
-                            )}
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-              )}
-            </div>
+              );
+            })
           )}
         </div>
       </section>

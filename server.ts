@@ -42,6 +42,24 @@ async function startServer() {
     });
   });
 
+  app.get('/api/public/identity', (_req, res) => {
+    const snap = getSanitizedPortalSnapshot();
+    const s = snap.database?.settings;
+    if (!s) {
+      res.json({ ok: true, hasSavedSettings: false });
+      return;
+    }
+    res.json({
+      ok: true,
+      hasSavedSettings: true,
+      academicYear: s.academicYear || '',
+      semester: s.semester === 'Genap' ? 'Genap' : 'Ganjil',
+      masterAcademicYears: Array.isArray(s.masterAcademicYears) ? s.masterAcademicYears : [],
+      themeId: s.themeId || 'slate-indigo',
+      identity: s.identity || null,
+    });
+  });
+
   app.get('/api/session', requireAuth, (req: AuthenticatedRequest, res) => {
     res.json({
       ok: true,

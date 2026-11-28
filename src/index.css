@@ -67,13 +67,23 @@
     color: #000000 !important;
   }
 
+  .print-area table.report-data-table thead {
+    display: table-header-group;
+  }
+
+  .print-area table.report-data-table tr {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
   .print-avoid-break {
     break-inside: avoid !important;
     page-break-inside: avoid !important;
   }
 
   .print-page-break {
-    page-break-before: always;
+    break-before: page !important;
+    page-break-before: always !important;
   }
 }
 

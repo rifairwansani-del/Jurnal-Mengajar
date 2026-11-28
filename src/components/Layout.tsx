@@ -14,7 +14,7 @@ import {
   LogOut,
   BookOpenCheck,
 } from 'lucide-react';
-import { MenuId, SessionState, SystemSettings } from '../types';
+import { MenuId, SemesterType, SessionState, SystemSettings } from '../types';
 import { PORTAL_THEMES } from '../utils/themeConfig';
 
 interface LayoutProps {
@@ -22,6 +22,7 @@ interface LayoutProps {
   onSelectMenu: (menu: MenuId) => void;
   settings: SystemSettings;
   session: SessionState;
+  onChangePeriod: (academicYear: string, semester: SemesterType) => void;
   onLogout: () => void;
   children: React.ReactNode;
 }
@@ -43,10 +44,17 @@ export function Layout({
   onSelectMenu,
   settings,
   session,
+  onChangePeriod,
   onLogout,
   children,
 }: LayoutProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  const yearOptions = React.useMemo(() => {
+    const set = new Set(settings.masterAcademicYears);
+    if (session.academicYear) set.add(session.academicYear);
+    return Array.from(set).filter(Boolean).sort();
+  }, [settings.masterAcademicYears, session.academicYear]);
 
   const theme = PORTAL_THEMES[settings.themeId] || PORTAL_THEMES['slate-indigo'];
   const currentNav = NAV_ITEMS.find((item) => item.id === activeMenu);
@@ -58,7 +66,7 @@ export function Layout({
 
   return (
     <div
-      className={`min-h-screen flex ${theme.canvasBg} ${
+      className={`min-h-screen flex print:block print:min-h-0 ${theme.canvasBg} ${
         theme.isDark ? 'theme-dark text-slate-100' : 'text-slate-900'
       }`}
     >
@@ -154,7 +162,7 @@ export function Layout({
       </aside>
 
       {/* Main Content Area */}
-      <div className="flex-1 lg:pl-64 print:pl-0 flex flex-col min-w-0">
+      <div className="flex-1 lg:pl-64 print:pl-0 print:block print:w-full flex flex-col min-w-0">
         {/* Top Bar */}
         <header className="no-print sticky top-0 z-30 h-14 bg-white/95 backdrop-blur-xs border-b border-slate-200 px-4 sm:px-6 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 min-w-0">
@@ -171,10 +179,34 @@ export function Layout({
             </h1>
           </div>
 
-          <div className="flex items-center gap-4 text-xs text-slate-500 shrink-0">
-            <span className="hidden sm:inline whitespace-nowrap">
-              TA {session.academicYear} · Semester {session.semester}
-            </span>
+          <div className="flex items-center gap-2 sm:gap-3 text-xs text-slate-600 shrink-0">
+            <div className="hidden sm:flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1">
+              <span className="text-[11px] font-semibold text-slate-500">TA</span>
+              <select
+                aria-label="Tahun Ajaran Aktif"
+                value={session.academicYear}
+                onChange={(e) => onChangePeriod(e.target.value, session.semester)}
+                className="bg-transparent text-xs font-semibold text-slate-800 focus:outline-none cursor-pointer"
+              >
+                {yearOptions.map((yr) => (
+                  <option key={yr} value={yr}>
+                    {yr}
+                  </option>
+                ))}
+              </select>
+              <span className="text-slate-300">·</span>
+              <select
+                aria-label="Semester Aktif"
+                value={session.semester}
+                onChange={(e) =>
+                  onChangePeriod(session.academicYear, e.target.value as SemesterType)
+                }
+                className="bg-transparent text-xs font-semibold text-slate-800 focus:outline-none cursor-pointer"
+              >
+                <option value="Ganjil">Ganjil</option>
+                <option value="Genap">Genap</option>
+              </select>
+            </div>
             <button
               type="button"
               onClick={onLogout}

@@ -118,6 +118,13 @@ export function AccountsView({
     setName(t.name);
     setEmail(t.email || '');
     setNip(t.nip || '');
+    const posLower = (t.position || '').trim().toLowerCase();
+    if (posLower === 'kepala sekolah') setRole('Kepala Sekolah');
+    else if (posLower === 'wali kelas') setRole('Wali Kelas');
+    else if (posLower === 'guru bk' || posLower === 'bimbingan konseling') setRole('Guru BK');
+    else if (posLower.includes('admin') || posLower.includes('operator')) setRole('Admin');
+    else setRole('Guru Mapel');
+    setStatus(t.status === 'Nonaktif' ? 'Nonaktif' : 'Aktif');
     if (!username && t.email && t.email.includes('@')) {
       const prefix = t.email.split('@')[0].toLowerCase().replace(/[^a-z0-9._-]/g, '');
       if (prefix.length >= 3) setUsername(prefix);
@@ -554,7 +561,7 @@ export function AccountsView({
       {/* Tabel Daftar Akun */}
       <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-200 space-y-3">
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+          <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3">
             <div>
               <h2 className="text-base font-bold text-slate-900">
                 Daftar Akun Terdaftar ({filteredAccounts.length})
@@ -564,31 +571,43 @@ export function AccountsView({
               </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2.5">
-              <select
-                value={roleFilter}
-                onChange={(e) => setRoleFilter(e.target.value)}
-                aria-label="Filter peran akun"
-                className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
-              >
-                <option value="">--Pilih Peran--</option>
-                <option value="ALL">Semua Peran</option>
-                {ROLE_OPTIONS.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </select>
+            <div className="flex flex-wrap items-end gap-2.5">
+              <div>
+                <label htmlFor="acc-filter-role" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                  Peran Akun
+                </label>
+                <select
+                  id="acc-filter-role"
+                  value={roleFilter}
+                  onChange={(e) => setRoleFilter(e.target.value)}
+                  aria-label="Filter peran akun"
+                  className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+                >
+                  <option value="">--Pilih Peran--</option>
+                  <option value="ALL">Semua Peran</option>
+                  {ROLE_OPTIONS.map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-              <div className="relative">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Cari nama / username / email..."
-                  className="pl-9 pr-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600 w-48 sm:w-60"
-                />
+              <div>
+                <label htmlFor="acc-filter-search" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                  Cari Akun
+                </label>
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    id="acc-filter-search"
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Cari nama / username / email..."
+                    className="pl-9 pr-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600 w-48 sm:w-60"
+                  />
+                </div>
               </div>
             </div>
           </div>

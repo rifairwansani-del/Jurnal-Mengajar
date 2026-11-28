@@ -1,9 +1,15 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import {
+  BookOpen,
+  Check,
+  ChevronDown,
+  Copy,
   ImagePlus,
   Pencil,
   Plus,
+  Printer,
+  RefreshCw,
   Search,
   Trash2,
   Upload,
@@ -18,10 +24,17 @@ import {
   printDatasetExact,
 } from '../utils/exportHelpers';
 import {
+  compareClassNames,
   compressImageFileToDataUrl,
+  formatTeacherAssignmentsSummary,
+  getAllTeacherClasses,
+  getTeacherClassesForSubject,
   getTeacherDummyPhoto,
+  getTeacherSubjects,
   getTodayISO,
+  isNonTeachingSubjectLabel,
   normalizePhotoInputUrl,
+  normalizeTeacherSubjectClasses,
 } from '../utils/portalHelpers';
 import { ConfirmDialogState } from './FeedbackUI';
 import { FormModal } from './FormModal';
@@ -34,6 +47,8 @@ interface TeachersViewProps {
   onImportTeachersBatch: (incoming: Omit<Teacher, 'id'>[]) => { added: number; updated: number };
   onDeleteTeacher: (id: string) => void;
   onDeleteTeachersBatch: (ids: string[]) => void;
+  onSyncFromAccounts?: () => { added: number; updated?: number };
+  onOpenPrintForTeacher?: (teacher: Teacher) => void;
   onToast: (type: 'success' | 'error' | 'info', message: string) => void;
   onConfirm: (cfg: Omit<ConfirmDialogState, 'open'>) => void;
 }
@@ -44,6 +59,56 @@ const EMPLOYMENT_TYPES: TeacherEmploymentStatus[] = [
   'Tetap Yayasan',
   'Honorer',
 ];
+
+const STANDARD_TEACHER_POSITIONS: string[] = [
+  'Guru Mata Pelajaran',
+  'Wali Kelas',
+  'Guru BK',
+  'Kepala Sekolah',
+  'Wakil Kepala Sekolah',
+  'Wakasek Kurikulum',
+  'Wakasek Kesiswaan',
+  'Wakasek Sarpras',
+  'Wakasek Humas',
+  'Pembina OSIS / Ekstrakurikuler',
+  'Kepala Perpustakaan',
+  'Kepala Laboratorium',
+  'Tata Usaha (TU)',
+  'Admin / Operator Sekolah',
+];
+
+const STANDARD_SUBJECT_OPTIONS: string[] = [
+  'Pendidikan Agama',
+  'Pendidikan Pancasila / PPKn',
+  'Bahasa Indonesia',
+  'Bahasa Inggris',
+  'Matematika',
+  'Matematika Wajib',
+  'Matematika Peminatan',
+  'Sejarah',
+  'Fisika',
+  'Kimia',
+  'Biologi',
+  'Geografi',
+  'Ekonomi',
+  'Sosiologi',
+  'Informatika',
+  'Seni Budaya',
+  'PJOK',
+  'Prakarya & Kewirausahaan',
+  'Bahasa Daerah',
+  'IPA',
+  'IPS',
+  'Bimbingan Konseling',
+  'Umum / Non-Mapel',
+  'Semua Mata Pelajaran',
+];
+
+const NON_TEACHING_POSITIONS = new Set([
+  'Kepala Sekolah',
+  'Tata Usaha (TU)',
+  'Admin / Operator Sekolah',
+]);
 
 const TEACHER_IMPORT_HEADERS = [
   'NIP',
@@ -64,16 +129,93 @@ export function TeachersView({
   onImportTeachersBatch,
   onDeleteTeacher,
   onDeleteTeachersBatch,
+  onSyncFromAccounts,
+  onOpenPrintForTeacher,
   onToast,
   onConfirm,
 }: TeachersViewProps) {
-  const { teachers, settings } = db;
+  const { teachers, students, accounts, settings } = db;
+
+  const handleSyncFromAccounts = () => {
+    if (!onSyncFromAccounts) return;
+    const { added, updated = 0 } = onSyncFromAccounts();
+    if (added > 0 && updated > 0) {
+      onToast(
+        'success',
+        `Sinkronisasi selesai: ${added} guru ditambahkan dan ${updated} data guru diperbarui dari Manajemen Akun.`
+      );
+    } else if (added > 0) {
+      onToast('success', `${added} data guru berhasil disinkronkan dari Manajemen Akun.`);
+    } else if (updated > 0) {
+      onToast('success', `${updated} data guru & mata pelajaran berhasil disinkronkan.`);
+    } else {
+      onToast('info', 'Semua akun, jabatan, dan mata pelajaran sudah tersinkronisasi.');
+    }
+  };
+
+  const positionOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const list: string[] = [];
+    const pushUnique = (val: string) => {
+      const trimmed = val.trim();
+      const lower = trimmed.toLowerCase();
+      if (!trimmed || seen.has(lower)) return;
+      seen.add(lower);
+      list.push(trimmed);
+    };
+    STANDARD_TEACHER_POSITIONS.forEach(pushUnique);
+    teachers.forEach((t) => pushUnique(t.position));
+    return list;
+  }, [teachers]);
+
+  const subjectOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const list: string[] = [];
+    const pushUnique = (val: string) => {
+      const trimmed = val.trim();
+      const lower = trimmed.toLowerCase();
+      if (
+        !trimmed ||
+        trimmed === '-' ||
+        trimmed === 'Semua Mata Pelajaran' ||
+        seen.has(lower)
+      ) {
+        return;
+      }
+      seen.add(lower);
+      list.push(trimmed);
+    };
+    settings.masterSubjects.forEach(pushUnique);
+    teachers.forEach((t) => {
+      getTeacherSubjects(t).forEach(pushUnique);
+      if (t.subject === 'Umum / Non-Mapel') pushUnique(t.subject);
+    });
+    STANDARD_SUBJECT_OPTIONS.forEach(pushUnique);
+    return list;
+  }, [settings.masterSubjects, teachers]);
+
+  const classOptions = useMemo(() => {
+    const set = new Set<string>(settings.masterClasses);
+    students.forEach((s) => {
+      if (s.className) set.add(s.className);
+    });
+    teachers.forEach((t) => {
+      getAllTeacherClasses(t).forEach((c) => set.add(c));
+    });
+    return Array.from(set).filter(Boolean).sort(compareClassNames);
+  }, [settings.masterClasses, students, teachers]);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [nip, setNip] = useState('');
   const [name, setName] = useState('');
-  const [position, setPosition] = useState('Guru Mata Pelajaran');
-  const [subject, setSubject] = useState(settings.masterSubjects[0] || '');
+  const [position, setPosition] = useState('');
+  const [customPositionMode, setCustomPositionMode] = useState(false);
+  const [selectedSubjects, setSelectedSubjects] = useState<string[]>([]);
+  const [subjectClassesMap, setSubjectClassesMap] = useState<Record<string, string[]>>({});
+  const [subjectDropdownOpen, setSubjectDropdownOpen] = useState(false);
+  const [customSubjectInput, setCustomSubjectInput] = useState('');
+  const [customClassInputs, setCustomClassInputs] = useState<Record<string, string>>({});
+  const subjectDropdownRef = useRef<HTMLDivElement | null>(null);
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [gender, setGender] = useState<'L' | 'P' | ''>('');
@@ -93,12 +235,59 @@ export function TeachersView({
   const [formModalOpen, setFormModalOpen] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
 
+  useEffect(() => {
+    if (!subjectDropdownOpen) return;
+    const handleOutside = (e: MouseEvent) => {
+      if (
+        subjectDropdownRef.current &&
+        !subjectDropdownRef.current.contains(e.target as Node)
+      ) {
+        setSubjectDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutside);
+    return () => document.removeEventListener('mousedown', handleOutside);
+  }, [subjectDropdownOpen]);
+
+  const formSubjectOptions = useMemo(() => {
+    const seen = new Set(subjectOptions.map((s) => s.toLowerCase()));
+    const extras = selectedSubjects.filter((s) => !seen.has(s.toLowerCase()));
+    return [...subjectOptions, ...extras];
+  }, [subjectOptions, selectedSubjects]);
+
+  const formClassOptions = useMemo(() => {
+    const set = new Set<string>(classOptions);
+    Object.values(subjectClassesMap).forEach((arr) => {
+      arr.forEach((cls) => {
+        if (cls.trim()) set.add(cls.trim());
+      });
+    });
+    return Array.from(set).sort(compareClassNames);
+  }, [classOptions, subjectClassesMap]);
+
+  const classLevelGroups = useMemo(() => {
+    const groups = new Map<string, string[]>();
+    formClassOptions.forEach((cls) => {
+      const prefix = cls.split(/[-\s]/)[0]?.trim();
+      if (!prefix) return;
+      const arr = groups.get(prefix) || [];
+      arr.push(cls);
+      groups.set(prefix, arr);
+    });
+    return Array.from(groups.entries()).filter(([, list]) => list.length >= 2);
+  }, [formClassOptions]);
+
   const resetForm = () => {
     setEditingId(null);
     setNip('');
     setName('');
-    setPosition('Guru Mata Pelajaran');
-    setSubject(settings.masterSubjects[0] || '');
+    setPosition('');
+    setCustomPositionMode(false);
+    setSelectedSubjects([]);
+    setSubjectClassesMap({});
+    setSubjectDropdownOpen(false);
+    setCustomSubjectInput('');
+    setCustomClassInputs({});
     setEmail('');
     setPhone('');
     setGender('');
@@ -120,18 +309,171 @@ export function TeachersView({
     onToast('success', 'Foto guru berhasil diunggah ke pratinjau. Klik Simpan untuk menyimpan.');
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name.trim() || !gender || !employmentStatus || !status) {
-      onToast('error', 'Nama Guru, Jenis Kelamin, Status Kepegawaian, dan Status Aktif wajib diisi.');
+  const handlePositionSelectChange = (val: string) => {
+    if (val === '__CUSTOM__') {
+      setCustomPositionMode(true);
+      setPosition('');
       return;
     }
+    setCustomPositionMode(false);
+    setPosition(val);
+    if (val === 'Guru BK' && selectedSubjects.length === 0) {
+      setSelectedSubjects(['Bimbingan Konseling']);
+    } else if (NON_TEACHING_POSITIONS.has(val) && selectedSubjects.length === 0) {
+      setSelectedSubjects(['Umum / Non-Mapel']);
+    }
+  };
+
+  const toggleSubjectSelection = (subj: string) => {
+    setSelectedSubjects((prev) => {
+      const lower = subj.toLowerCase();
+      const exists = prev.some((s) => s.toLowerCase() === lower);
+      if (exists) {
+        return prev.filter((s) => s.toLowerCase() !== lower);
+      }
+      if (subj === 'Umum / Non-Mapel') {
+        return ['Umum / Non-Mapel'];
+      }
+      return [...prev.filter((s) => s !== 'Umum / Non-Mapel'), subj];
+    });
+  };
+
+  const handleAddCustomSubject = () => {
+    const rawItems = customSubjectInput
+      .split(/[,;]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (rawItems.length === 0) return;
+    setSelectedSubjects((prev) => {
+      const next = prev.filter((s) => s !== 'Umum / Non-Mapel');
+      const seen = new Set(next.map((s) => s.toLowerCase()));
+      rawItems.forEach((item) => {
+        if (!isNonTeachingSubjectLabel(item) && !seen.has(item.toLowerCase())) {
+          seen.add(item.toLowerCase());
+          next.push(item);
+        }
+      });
+      return next;
+    });
+    setCustomSubjectInput('');
+  };
+
+  const toggleClassForSubject = (subj: string, cls: string) => {
+    setSubjectClassesMap((prev) => {
+      const current = prev[subj] || [];
+      const exists = current.includes(cls);
+      const nextList = exists
+        ? current.filter((c) => c !== cls)
+        : [...current, cls].sort(compareClassNames);
+      return { ...prev, [subj]: nextList };
+    });
+  };
+
+  const setClassesForSubject = (subj: string, classes: string[]) => {
+    const unique = Array.from(new Set(classes.map((c) => c.trim()).filter(Boolean))).sort(
+      compareClassNames
+    );
+    setSubjectClassesMap((prev) => ({ ...prev, [subj]: unique }));
+  };
+
+  const toggleClassGroupForSubject = (subj: string, groupClasses: string[]) => {
+    const current = subjectClassesMap[subj] || [];
+    const allInGroupSelected = groupClasses.every((c) => current.includes(c));
+    if (allInGroupSelected) {
+      setClassesForSubject(
+        subj,
+        current.filter((c) => !groupClasses.includes(c))
+      );
+    } else {
+      setClassesForSubject(subj, [...current, ...groupClasses]);
+    }
+  };
+
+  const handleAddCustomClassForSubject = (subj: string) => {
+    const raw = (customClassInputs[subj] || '')
+      .split(/[,;]+/)
+      .map((c) => c.trim())
+      .filter(Boolean);
+    if (raw.length === 0) return;
+    const current = subjectClassesMap[subj] || [];
+    setClassesForSubject(subj, [...current, ...raw]);
+    setCustomClassInputs((prev) => ({ ...prev, [subj]: '' }));
+  };
+
+  const handleCopyClassesToAllSubjects = (sourceSubj: string) => {
+    const sourceClasses = subjectClassesMap[sourceSubj] || [];
+    setSubjectClassesMap((prev) => {
+      const next = { ...prev };
+      teachingSelectedSubjects.forEach((subj) => {
+        next[subj] = [...sourceClasses];
+      });
+      return next;
+    });
+    onToast(
+      'info',
+      `Daftar ${sourceClasses.length} kelas dari "${sourceSubj}" disalin ke semua mata pelajaran dipilih.`
+    );
+  };
+
+  const teachingSelectedSubjects = useMemo(
+    () => selectedSubjects.filter((s) => !isNonTeachingSubjectLabel(s)),
+    [selectedSubjects]
+  );
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim() || !gender || !position.trim() || !employmentStatus || !status) {
+      onToast(
+        'error',
+        'Nama Guru, Jenis Kelamin, Jabatan, Status Kepegawaian, dan Status Aktif wajib diisi.'
+      );
+      return;
+    }
+    const cleanPos = position.trim();
+    const cleanedTeachingSubjects = teachingSelectedSubjects.map((s) => s.trim()).filter(Boolean);
+    const fallbackLabel =
+      selectedSubjects.includes('Umum / Non-Mapel')
+        ? 'Umum / Non-Mapel'
+        : cleanPos === 'Guru BK'
+        ? 'Bimbingan Konseling'
+        : NON_TEACHING_POSITIONS.has(cleanPos)
+        ? 'Umum / Non-Mapel'
+        : '-';
+
+    const finalSubjects =
+      cleanedTeachingSubjects.length > 0
+        ? cleanedTeachingSubjects
+        : fallbackLabel === 'Bimbingan Konseling'
+        ? ['Bimbingan Konseling']
+        : [];
+
+    const cleanedSubjectClasses = normalizeTeacherSubjectClasses(
+      finalSubjects,
+      subjectClassesMap
+    );
+
+    const resolvedSubject =
+      finalSubjects.length > 0 ? finalSubjects.join(', ') : fallbackLabel;
+
+    const newSubjectsCount = finalSubjects.filter(
+      (subj) =>
+        !isNonTeachingSubjectLabel(subj) &&
+        !settings.masterSubjects.some((ms) => ms.trim().toLowerCase() === subj.toLowerCase())
+    ).length;
+
+    const totalAssignedClasses = Object.values(cleanedSubjectClasses).reduce(
+      (acc, list) => acc + list.length,
+      0
+    );
+
     onUpsertTeacher({
       id: editingId ?? `tch-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       nip: nip.trim(),
       name: name.trim(),
-      position: position.trim() || 'Guru Mata Pelajaran',
-      subject: subject.trim() || '-',
+      position: cleanPos,
+      subject: resolvedSubject,
+      subjects: finalSubjects,
+      subjectClasses: cleanedSubjectClasses,
       email: email.trim(),
       phone: phone.trim(),
       gender,
@@ -140,9 +482,20 @@ export function TeachersView({
       address: address.trim(),
       photo: normalizePhotoInputUrl(photo),
     });
+
     onToast(
       'success',
-      editingId ? 'Data guru berhasil diperbarui.' : 'Data guru baru berhasil ditambahkan.'
+      editingId
+        ? totalAssignedClasses > 0
+          ? `Data guru diperbarui (${finalSubjects.length} mapel siap cetak).`
+          : newSubjectsCount > 0
+          ? `Data guru diperbarui & ${newSubjectsCount} mapel disinkronkan ke Master Mapel.`
+          : 'Data guru berhasil diperbarui & tersinkronisasi.'
+        : totalAssignedClasses > 0
+        ? `Data guru ditambahkan (${finalSubjects.length} mapel & kelas diajar siap cetak).`
+        : newSubjectsCount > 0
+        ? `Data guru ditambahkan & ${newSubjectsCount} mapel disinkronkan ke Master Mapel.`
+        : 'Data guru baru berhasil ditambahkan.'
     );
     resetForm();
     setFormModalOpen(false);
@@ -152,8 +505,22 @@ export function TeachersView({
     setEditingId(t.id);
     setNip(t.nip);
     setName(t.name);
-    setPosition(t.position);
-    setSubject(t.subject);
+    setPosition(t.position || '');
+    setCustomPositionMode(false);
+    const parsedSubjects = getTeacherSubjects(t);
+    if (parsedSubjects.length > 0) {
+      setSelectedSubjects(parsedSubjects);
+      setSubjectClassesMap(normalizeTeacherSubjectClasses(parsedSubjects, t.subjectClasses));
+    } else if (t.subject === 'Umum / Non-Mapel') {
+      setSelectedSubjects(['Umum / Non-Mapel']);
+      setSubjectClassesMap({});
+    } else {
+      setSelectedSubjects([]);
+      setSubjectClassesMap({});
+    }
+    setSubjectDropdownOpen(false);
+    setCustomSubjectInput('');
+    setCustomClassInputs({});
     setEmail(t.email);
     setPhone(t.phone);
     setGender(t.gender);
@@ -188,10 +555,12 @@ export function TeachersView({
       .filter((t) => {
         if (statusFilter && statusFilter !== 'ALL' && t.status !== statusFilter) return false;
         if (q) {
+          const assignmentSummary = formatTeacherAssignmentsSummary(t).toLowerCase();
           return (
             t.name.toLowerCase().includes(q) ||
             t.nip.toLowerCase().includes(q) ||
             t.subject.toLowerCase().includes(q) ||
+            assignmentSummary.includes(q) ||
             t.position.toLowerCase().includes(q)
           );
         }
@@ -245,40 +614,55 @@ export function TeachersView({
   }, [filteredTeachers, selectedIds]);
 
   const buildTeacherMatrix = () => {
-    const headers = ['No', ...TEACHER_IMPORT_HEADERS];
-    const rows = exportSourceTeachers.map((t, idx) => [
-      idx + 1,
-      t.nip || '-',
-      t.name,
-      t.gender,
-      t.position,
-      t.subject,
-      t.employmentStatus,
-      t.status,
-      t.email || '-',
-      t.phone || '-',
-      t.address || '-',
-    ]);
+    const headers = ['No', ...TEACHER_IMPORT_HEADERS, 'Kelas Diajar'];
+    const rows = exportSourceTeachers.map((t, idx) => {
+      const subjects = getTeacherSubjects(t);
+      const classSummary =
+        subjects.length > 0
+          ? subjects
+              .map((s) => {
+                const cls = getTeacherClassesForSubject(t, s);
+                return cls.length > 0 ? `${s}: ${cls.join(', ')}` : '';
+              })
+              .filter(Boolean)
+              .join(' | ') || '-'
+          : '-';
+      return [
+        idx + 1,
+        t.nip || '-',
+        t.name,
+        t.gender,
+        t.position,
+        t.subject,
+        t.employmentStatus,
+        t.status,
+        t.email || '-',
+        t.phone || '-',
+        t.address || '-',
+        classSummary,
+      ];
+    });
     return { headers, rows };
   };
 
   const handleDownloadTemplate = () => {
     exportRowsToXlsx(
       'Template Guru',
-      [...TEACHER_IMPORT_HEADERS, 'Link Foto'],
+      [...TEACHER_IMPORT_HEADERS, 'Link Foto', 'Kelas Diajar'],
       [
         [
           '19870615 201402 1 002',
           'Drs. Bambang Sutrisno, M.Pd.',
           'L',
           'Guru Mata Pelajaran',
-          settings.masterSubjects[0] || 'Matematika',
+          'Matematika, Fisika',
           'PNS',
           'Aktif',
           'bambang@sekolah.sch.id',
           '081234567800',
           'Jl. Kartini No. 12, Kudus',
           '',
+          'Matematika: X-A, X-B | Fisika: XI-IPA 1',
         ],
       ],
       'Template_Impor_Guru_E-Guru.xlsx'
@@ -306,12 +690,44 @@ export function TeachersView({
       const validStatus: 'Aktif' | 'Cuti' | 'Nonaktif' =
         rawStatus === 'Cuti' || rawStatus === 'Nonaktif' ? rawStatus : 'Aktif';
 
+      const rawSubjectStr = clean(4) || '-';
+      const parsedSubjects = getTeacherSubjects({ subject: rawSubjectStr });
+      const rawClassesCol = clean(11);
+      const parsedMap: Record<string, string[]> = {};
+      if (rawClassesCol && rawClassesCol !== '-') {
+        rawClassesCol.split(/[|;]+/).forEach((seg) => {
+          const colonIdx = seg.indexOf(':');
+          if (colonIdx > 0) {
+            const sName = seg.slice(0, colonIdx).trim();
+            const cList = seg
+              .slice(colonIdx + 1)
+              .split(',')
+              .map((c) => c.trim())
+              .filter(Boolean);
+            if (sName) parsedMap[sName] = cList;
+          } else if (parsedSubjects.length > 0) {
+            const cList = seg
+              .split(',')
+              .map((c) => c.trim())
+              .filter(Boolean);
+            parsedSubjects.forEach((s) => {
+              parsedMap[s] = cList;
+            });
+          }
+        });
+      }
+
+      const cleanSubjects = parsedSubjects.length > 0 ? parsedSubjects : [];
+      const cleanMap = normalizeTeacherSubjectClasses(cleanSubjects, parsedMap);
+
       result.push({
         nip: clean(0),
         name: tName,
         gender: clean(2).toUpperCase().startsWith('P') ? 'P' : 'L',
         position: clean(3) || 'Guru Mata Pelajaran',
-        subject: clean(4) || '-',
+        subject: cleanSubjects.length > 0 ? cleanSubjects.join(', ') : rawSubjectStr,
+        subjects: cleanSubjects,
+        subjectClasses: cleanMap,
         employmentStatus: validEmp,
         status: validStatus,
         email: clean(7),
@@ -411,6 +827,17 @@ export function TeachersView({
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {onSyncFromAccounts && accounts.length > 0 && (
+            <button
+              type="button"
+              onClick={handleSyncFromAccounts}
+              className="px-3.5 py-2 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs sm:text-sm font-semibold transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
+              title="Sinkronkan data akun, jabatan, dan mata pelajaran antara Manajemen Akun, Data Guru, dan Master Mapel"
+            >
+              <RefreshCw className="w-4 h-4" />
+              <span>Sinkron dari Akun</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setImportModalOpen(true)}
@@ -436,7 +863,7 @@ export function TeachersView({
       {/* Tabel Data Guru */}
       <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-200 space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
             <div>
               <h2 className="text-base font-bold text-slate-900">
                 Daftar Guru Terdaftar ({filteredTeachers.length})
@@ -446,29 +873,41 @@ export function TeachersView({
               </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2.5">
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
-                aria-label="Filter status guru"
-                className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
-              >
-                <option value="">--Pilih Status--</option>
-                <option value="ALL">Semua Status</option>
-                <option value="Aktif">Aktif</option>
-                <option value="Cuti">Cuti</option>
-                <option value="Nonaktif">Nonaktif</option>
-              </select>
+            <div className="flex flex-wrap items-end gap-2.5">
+              <div>
+                <label htmlFor="tch-filter-status" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                  Status Guru
+                </label>
+                <select
+                  id="tch-filter-status"
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                  aria-label="Filter status guru"
+                  className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+                >
+                  <option value="">--Pilih Status--</option>
+                  <option value="ALL">Semua Status</option>
+                  <option value="Aktif">Aktif</option>
+                  <option value="Cuti">Cuti</option>
+                  <option value="Nonaktif">Nonaktif</option>
+                </select>
+              </div>
 
-              <div className="relative">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Cari nama / NIP / mapel..."
-                  className="pl-9 pr-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600 w-48 sm:w-56"
-                />
+              <div>
+                <label htmlFor="tch-filter-search" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                  Cari Guru
+                </label>
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    id="tch-filter-search"
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Cari nama / NIP / mapel..."
+                    className="pl-9 pr-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600 w-48 sm:w-56"
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -571,7 +1010,17 @@ export function TeachersView({
               {filteredTeachers.length === 0 ? (
                 <tr>
                   <td colSpan={12} className="px-4 py-10 text-center text-sm text-slate-500">
-                    Belum ada data guru yang sesuai filter.
+                    <p>Belum ada data guru yang sesuai filter.</p>
+                    {teachers.length === 0 && onSyncFromAccounts && accounts.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleSyncFromAccounts}
+                        className="mt-3 px-3.5 py-2 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-semibold inline-flex items-center gap-1.5"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>Sinkronkan {accounts.length} Akun dari Manajemen Akun</span>
+                      </button>
+                    )}
                   </td>
                 </tr>
               ) : (
@@ -610,7 +1059,31 @@ export function TeachersView({
                       </td>
                       <td className="px-3 py-2.5 text-xs font-semibold">{t.gender}</td>
                       <td className="px-3 py-2.5 text-xs whitespace-nowrap">{t.position}</td>
-                      <td className="px-3 py-2.5 text-xs whitespace-nowrap">{t.subject}</td>
+                      <td className="px-3 py-2.5 text-xs min-w-[190px]">
+                        {(() => {
+                          const subjs = getTeacherSubjects(t);
+                          if (subjs.length === 0) {
+                            return <span className="text-slate-600">{t.subject || '-'}</span>;
+                          }
+                          return (
+                            <div className="space-y-1">
+                              {subjs.map((subj) => {
+                                const clsList = getTeacherClassesForSubject(t, subj);
+                                return (
+                                  <div key={subj} className="flex flex-wrap items-center gap-1">
+                                    <span className="font-semibold text-slate-800">{subj}</span>
+                                    {clsList.length > 0 && (
+                                      <span className="text-[11px] text-indigo-700 bg-indigo-50 border border-indigo-200 rounded px-1.5 py-0.5">
+                                        {clsList.join(', ')}
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          );
+                        })()}
+                      </td>
                       <td className="px-3 py-2.5 text-xs whitespace-nowrap">{t.employmentStatus}</td>
                       <td className="px-3 py-2.5 text-xs font-semibold whitespace-nowrap">
                         <span
@@ -631,6 +1104,17 @@ export function TeachersView({
                       </td>
                       <td className="px-3 py-2.5 whitespace-nowrap text-right">
                         <div className="inline-flex items-center gap-1.5">
+                          {onOpenPrintForTeacher && (
+                            <button
+                              type="button"
+                              onClick={() => onOpenPrintForTeacher(t)}
+                              title="Buka Pusat Laporan Resmi siap cetak sesuai mapel & kelas guru ini"
+                              className="px-2.5 py-1.5 rounded-md border border-indigo-200 bg-indigo-50 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 inline-flex items-center gap-1"
+                            >
+                              <Printer className="w-3.5 h-3.5" />
+                              Siap Cetak
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => handleEdit(t)}
@@ -718,36 +1202,152 @@ export function TeachersView({
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div>
               <label htmlFor="tch-pos" className="block text-xs font-semibold text-slate-700 mb-1.5">
-                Jabatan / Tugas Tambahan
+                Jabatan / Tugas Tambahan <span className="text-rose-600">*</span>
               </label>
-              <input
-                id="tch-pos"
-                type="text"
-                value={position}
-                onChange={(e) => setPosition(e.target.value)}
-                placeholder="Guru Mapel / Wali Kelas / Guru BK"
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600"
-              />
+              {customPositionMode ? (
+                <div className="flex items-center gap-1.5">
+                  <input
+                    id="tch-pos"
+                    type="text"
+                    value={position}
+                    onChange={(e) => setPosition(e.target.value)}
+                    placeholder="Ketik jabatan lainnya..."
+                    autoFocus
+                    className="flex-1 min-w-0 px-3 py-2 text-sm border border-indigo-300 rounded-lg focus:outline-none focus:border-indigo-600"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomPositionMode(false);
+                      if (!positionOptions.includes(position.trim())) {
+                        setPosition('');
+                      }
+                    }}
+                    className="px-2.5 py-2 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-medium text-slate-600 shrink-0"
+                    title="Kembali pilih dari daftar jabatan"
+                  >
+                    Daftar
+                  </button>
+                </div>
+              ) : (
+                <select
+                  id="tch-pos"
+                  value={position}
+                  onChange={(e) => handlePositionSelectChange(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+                >
+                  <option value="">--Pilih Jabatan / Tugas--</option>
+                  {positionOptions.map((pos) => (
+                    <option key={pos} value={pos}>
+                      {pos}
+                    </option>
+                  ))}
+                  <option value="__CUSTOM__">+ Ketik Jabatan Lainnya...</option>
+                </select>
+              )}
             </div>
 
-            <div>
-              <label htmlFor="tch-subj" className="block text-xs font-semibold text-slate-700 mb-1.5">
-                Mata Pelajaran Diampu
-              </label>
-              <input
+            <div className="relative" ref={subjectDropdownRef}>
+              <span className="block text-xs font-semibold text-slate-700 mb-1.5">
+                Mata Pelajaran Diampu (Multi-Select)
+              </span>
+              <button
                 id="tch-subj"
-                list="teacher-subject-list"
-                value={subject}
-                onChange={(e) => setSubject(e.target.value)}
-                placeholder="Mata pelajaran"
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600"
-              />
-              <datalist id="teacher-subject-list">
-                {settings.masterSubjects.map((s) => (
-                  <option key={s} value={s} />
-                ))}
-                <option value="Bimbingan Konseling" />
-              </datalist>
+                type="button"
+                onClick={() => setSubjectDropdownOpen((o) => !o)}
+                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white text-left flex items-center justify-between gap-2 focus:outline-none focus:border-indigo-600"
+              >
+                <span className="truncate text-slate-800">
+                  {selectedSubjects.length === 0
+                    ? '--Pilih Mapel--'
+                    : selectedSubjects.join(', ')}
+                </span>
+                <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
+              </button>
+
+              {subjectDropdownOpen && (
+                <div className="absolute left-0 mt-1.5 z-30 w-full min-w-[270px] bg-white border border-slate-200 rounded-xl shadow-xl p-2 space-y-1.5">
+                  <div className="flex items-center justify-between px-2 py-1 border-b border-slate-100 text-xs">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSelectedSubjects(
+                          formSubjectOptions.filter((s) => !isNonTeachingSubjectLabel(s))
+                        )
+                      }
+                      className="font-semibold text-indigo-600 hover:underline"
+                    >
+                      Pilih Semua
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSubjects([])}
+                      className="text-slate-500 hover:text-slate-700"
+                    >
+                      Kosongkan
+                    </button>
+                  </div>
+
+                  <div className="max-h-52 overflow-y-auto space-y-0.5 pr-0.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedSubjects([]);
+                        setSubjectDropdownOpen(false);
+                      }}
+                      className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                        selectedSubjects.length === 0
+                          ? 'bg-indigo-50 text-indigo-700 font-semibold'
+                          : 'text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      --Pilih Mapel--
+                    </button>
+                    {formSubjectOptions.map((subj) => {
+                      const isChecked = selectedSubjects.some(
+                        (s) => s.toLowerCase() === subj.toLowerCase()
+                      );
+                      return (
+                        <label
+                          key={subj}
+                          className="flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-slate-50 cursor-pointer text-xs sm:text-sm text-slate-800"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => toggleSubjectSelection(subj)}
+                            className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600"
+                          />
+                          <span className="truncate">{subj}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+
+                  <div className="pt-1.5 border-t border-slate-100 flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      value={customSubjectInput}
+                      onChange={(e) => setCustomSubjectInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleAddCustomSubject();
+                        }
+                      }}
+                      placeholder="+ Ketik mapel baru..."
+                      className="flex-1 min-w-0 px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAddCustomSubject}
+                      className="px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shrink-0"
+                    >
+                      Tambah
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div>
@@ -786,6 +1386,148 @@ export function TeachersView({
               </select>
             </div>
           </div>
+
+          {teachingSelectedSubjects.length > 0 && (
+            <div className="rounded-xl border border-indigo-200 bg-indigo-50/40 p-3.5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <BookOpen className="w-4 h-4 text-indigo-600 shrink-0" />
+                  <div>
+                    <p className="text-xs font-bold text-slate-900">
+                      Kelas yang Diajar per Mata Pelajaran ({teachingSelectedSubjects.length} Mapel)
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      Pilih kelas untuk setiap mata pelajaran yang diampu agar laporan langsung siap cetak
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2.5">
+                {teachingSelectedSubjects.map((subj) => {
+                  const selectedCls = subjectClassesMap[subj] || [];
+                  return (
+                    <div
+                      key={subj}
+                      className="rounded-lg border border-slate-200 bg-white p-3 space-y-2.5"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-xs font-bold text-slate-900">{subj}</span>
+                          <span className="text-[11px] font-semibold px-2 py-0.5 rounded border border-indigo-200 bg-indigo-50 text-indigo-700">
+                            {selectedCls.length > 0
+                              ? `${selectedCls.length} Kelas: ${selectedCls.join(', ')}`
+                              : 'Belum pilih kelas'}
+                          </span>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                          {classLevelGroups.map(([prefix, groupCls]) => {
+                            const allSelected = groupCls.every((c) => selectedCls.includes(c));
+                            return (
+                              <button
+                                key={prefix}
+                                type="button"
+                                onClick={() => toggleClassGroupForSubject(subj, groupCls)}
+                                className={`px-2 py-0.5 rounded border font-semibold transition-colors ${
+                                  allSelected
+                                    ? 'bg-indigo-600 text-white border-indigo-600'
+                                    : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                                }`}
+                              >
+                                Kelas {prefix}
+                              </button>
+                            );
+                          })}
+                          <button
+                            type="button"
+                            onClick={() => setClassesForSubject(subj, formClassOptions)}
+                            className="font-semibold text-indigo-600 hover:underline"
+                          >
+                            Pilih Semua
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setClassesForSubject(subj, [])}
+                            className="text-slate-500 hover:text-slate-700"
+                          >
+                            Kosongkan
+                          </button>
+                          {teachingSelectedSubjects.length > 1 && selectedCls.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => handleCopyClassesToAllSubjects(subj)}
+                              className="inline-flex items-center gap-1 font-semibold text-emerald-700 hover:underline"
+                              title="Salin kelas ini ke semua mata pelajaran lain yang dipilih"
+                            >
+                              <Copy className="w-3 h-3" />
+                              Samakan ke Semua Mapel
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {formClassOptions.length > 0 ? (
+                        <div className="grid grid-cols-3 sm:grid-cols-6 lg:grid-cols-8 gap-1.5 max-h-36 overflow-y-auto pr-0.5">
+                          {formClassOptions.map((cls) => {
+                            const checked = selectedCls.includes(cls);
+                            return (
+                              <label
+                                key={`${subj}-${cls}`}
+                                className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg border text-xs cursor-pointer transition-colors select-none ${
+                                  checked
+                                    ? 'bg-indigo-50 border-indigo-400 text-indigo-900 font-semibold'
+                                    : 'bg-slate-50/70 border-slate-200 text-slate-700 hover:bg-slate-100'
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => toggleClassForSubject(subj, cls)}
+                                  className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-600"
+                                />
+                                <span className="truncate">{cls}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className="text-[11px] text-slate-500">
+                          Belum ada daftar kelas master. Tambahkan kelas di bawah atau melalui Data Siswa / Pengaturan.
+                        </p>
+                      )}
+
+                      <div className="flex items-center gap-1.5 pt-1">
+                        <input
+                          type="text"
+                          value={customClassInputs[subj] || ''}
+                          onChange={(e) =>
+                            setCustomClassInputs((prev) => ({ ...prev, [subj]: e.target.value }))
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleAddCustomClassForSubject(subj);
+                            }
+                          }}
+                          placeholder={`+ Tambah kelas lain untuk ${subj} (contoh: X-A, X-B)...`}
+                          className="flex-1 min-w-0 px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleAddCustomClassForSubject(subj)}
+                          className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-semibold text-slate-700 shrink-0 inline-flex items-center gap-1"
+                        >
+                          <Check className="w-3.5 h-3.5 text-indigo-600" />
+                          Tambah Kelas
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             <div>

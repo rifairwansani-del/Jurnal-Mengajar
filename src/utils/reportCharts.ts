@@ -191,6 +191,7 @@ function renderOffscreenChartPng<T extends ChartType>(
 export function buildReportCharts(params: {
   selectedChartTypes: ReportChartId[];
   selectedClasses: string[];
+  selectedSubjects?: string[];
   subjectFilter: string;
   students: Student[];
   journals: JournalEntry[];
@@ -202,6 +203,7 @@ export function buildReportCharts(params: {
   const {
     selectedChartTypes,
     selectedClasses,
+    selectedSubjects,
     subjectFilter,
     students,
     journals,
@@ -216,6 +218,7 @@ export function buildReportCharts(params: {
   const fontCss = getCanvasFontFamily(fontFamily);
   const sortedClasses = [...selectedClasses].sort(compareClassNames);
   const clsSet = new Set(sortedClasses);
+  const subjectSet = selectedSubjects ? new Set(selectedSubjects) : null;
 
   const periodGrades = grades.filter(
     (g) =>
@@ -223,7 +226,7 @@ export function buildReportCharts(params: {
       g.semester === semester &&
       g.score !== null &&
       clsSet.has(g.className) &&
-      (subjectFilter === 'ALL' || g.subject === subjectFilter)
+      (subjectSet ? subjectSet.has(g.subject) : subjectFilter === 'ALL' || g.subject === subjectFilter)
   );
 
   const widthPx = 960;

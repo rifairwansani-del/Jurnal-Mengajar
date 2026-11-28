@@ -12,6 +12,7 @@ import {
 import {
   compareClassNames,
   compareStudentsByClassAndAbsent,
+  getTeacherSubjects,
   getTodayISO,
   makeGradeId,
 } from '../utils/portalHelpers';
@@ -47,7 +48,7 @@ export function GradesView({
   onToast,
   onConfirm,
 }: GradesViewProps) {
-  const { students, grades, settings, session } = db;
+  const { students, teachers, grades, settings, session } = db;
 
   const classOptions = useMemo(() => {
     const set = new Set(settings.masterClasses);
@@ -56,6 +57,14 @@ export function GradesView({
     });
     return Array.from(set).sort(compareClassNames);
   }, [settings.masterClasses, students]);
+
+  const subjectOptions = useMemo(() => {
+    const set = new Set(settings.masterSubjects);
+    teachers.forEach((t) => {
+      getTeacherSubjects(t).forEach((subj) => set.add(subj));
+    });
+    return Array.from(set);
+  }, [settings.masterSubjects, teachers]);
 
   // Section 1 state
   const [selectedClass, setSelectedClass] = useState<string>('');
@@ -77,6 +86,7 @@ export function GradesView({
   const [matrixDirty, setMatrixDirty] = useState(false);
   const [selectedMatrixIds, setSelectedMatrixIds] = useState<Set<string>>(new Set());
   const [detailStudent, setDetailStudent] = useState<Student | null>(null);
+  const [examInputExpanded, setExamInputExpanded] = useState(false);
   const [matrixExpanded, setMatrixExpanded] = useState(false);
 
   const hasExamSelection = Boolean(selectedClass && selectedSubject && selectedExamType);
@@ -504,7 +514,7 @@ export function GradesView({
   }, [studentsInClass, selectedExamStudentIds]);
 
   const buildExamDataset = () => ({
-    headers: ['No', 'NIS', 'Nama Siswa', `Nilai ${selectedExamType}`, 'Status KKM (75)', 'Catatan'],
+    headers: ['No', 'NIS', 'NISN', 'Nama Siswa', `Nilai ${selectedExamType}`, 'Status KKM (75)', 'Catatan'],
     rows: exportExamStudents.map((st, idx) => {
       const row = draftScores[st.id] ?? { score: '', note: '', marker: 'neutral' };
       const numScore = row.score.trim() === '' ? null : Number(row.score);
@@ -513,6 +523,7 @@ export function GradesView({
       return [
         idx + 1,
         st.nis,
+        st.nisn || '-',
         st.name,
         numScore !== null ? numScore : '-',
         statusText,
@@ -567,7 +578,7 @@ export function GradesView({
   }, [matrixStudents, selectedMatrixIds]);
 
   const buildMatrixDataset = () => ({
-    headers: ['No', 'NIS', 'Nama Siswa', ...settings.masterExamTypes, 'Rata-rata', 'Status'],
+    headers: ['No', 'NIS', 'NISN', 'Nama Siswa', ...settings.masterExamTypes, 'Rata-rata', 'Status'],
     rows: exportMatrixStudents.map((st, idx) => {
       const numericVals: number[] = [];
       const examCells = settings.masterExamTypes.map((ex) => {
@@ -590,6 +601,7 @@ export function GradesView({
       return [
         idx + 1,
         st.nis,
+        st.nisn || '-',
         st.name,
         ...examCells,
         avg !== null ? Number(avg.toFixed(1)) : '-',
@@ -602,59 +614,109 @@ export function GradesView({
     <div className="space-y-8">
       {/* BAGIAN 1: INPUT NILAI PER JENIS UJIAN */}
       <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
-          <div>
-            <h2 className="text-base font-bold text-slate-900">1. Input Nilai per Jenis Ujian</h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Masukkan nilai 0–100, catatan siswa, serta penanda warna status belajar
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2.5">
-            <select
-              value={selectedClass}
-              onChange={(e) => setSelectedClass(e.target.value)}
-              aria-label="Pilih kelas"
-              className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+        <div
+          className={`px-5 py-4 space-y-3 ${
+            examInputExpanded ? 'border-b border-slate-200' : ''
+          }`}
+        >
+          <div className="flex flex-col xl:flex-row xl:items-end xl:justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => setExamInputExpanded((prev) => !prev)}
+              aria-expanded={examInputExpanded}
+              className="flex items-center justify-between gap-3 text-left flex-1 min-w-0 group"
             >
-              <option value="">--Pilih Kelas--</option>
-              {classOptions.map((c) => (
-                <option key={c} value={c}>
-                  Kelas {c}
-                </option>
-              ))}
-            </select>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-base font-bold text-slate-900 group-hover:text-indigo-700 transition-colors">
+                    1. Input Nilai per Jenis Ujian
+                  </h2>
+                  <span className="text-xs text-slate-500">
+                    · {selectedClass || '-'} · {selectedSubject || '-'} · {selectedExamType || '-'}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Masukkan nilai 0–100, catatan siswa, serta penanda warna status belajar
+                </p>
+              </div>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 group-hover:bg-slate-100 text-xs font-semibold text-slate-700 whitespace-nowrap shrink-0 transition-colors">
+                <span>{examInputExpanded ? 'Ciutkan' : 'Tampilkan'}</span>
+                <ChevronDown
+                  className={`w-4 h-4 text-slate-500 transition-transform duration-150 ${
+                    examInputExpanded ? 'rotate-180' : ''
+                  }`}
+                />
+              </span>
+            </button>
 
-            <select
-              value={selectedSubject}
-              onChange={(e) => setSelectedSubject(e.target.value)}
-              aria-label="Pilih mata pelajaran"
-              className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
-            >
-              <option value="">--Pilih Mapel--</option>
-              {settings.masterSubjects.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
+            {examInputExpanded && (
+              <div className="flex flex-wrap items-end gap-2.5">
+                <div>
+                  <label htmlFor="grd-exam-class" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                    Kelas
+                  </label>
+                  <select
+                    id="grd-exam-class"
+                    value={selectedClass}
+                    onChange={(e) => setSelectedClass(e.target.value)}
+                    aria-label="Pilih kelas"
+                    className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+                  >
+                    <option value="">--Pilih Kelas--</option>
+                    {classOptions.map((c) => (
+                      <option key={c} value={c}>
+                        Kelas {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-            <select
-              value={selectedExamType}
-              onChange={(e) => setSelectedExamType(e.target.value)}
-              aria-label="Pilih jenis ujian"
-              className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
-            >
-              <option value="">--Pilih Ujian--</option>
-              {settings.masterExamTypes.map((ex) => (
-                <option key={ex} value={ex}>
-                  {ex}
-                </option>
-              ))}
-            </select>
+                <div>
+                  <label htmlFor="grd-exam-subject" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                    Mata Pelajaran
+                  </label>
+                  <select
+                    id="grd-exam-subject"
+                    value={selectedSubject}
+                    onChange={(e) => setSelectedSubject(e.target.value)}
+                    aria-label="Pilih mata pelajaran"
+                    className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+                  >
+                    <option value="">--Pilih Mapel--</option>
+                    {subjectOptions.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label htmlFor="grd-exam-type" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                    Jenis Ujian
+                  </label>
+                  <select
+                    id="grd-exam-type"
+                    value={selectedExamType}
+                    onChange={(e) => setSelectedExamType(e.target.value)}
+                    aria-label="Pilih jenis ujian"
+                    className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+                  >
+                    <option value="">--Pilih Ujian--</option>
+                    {settings.masterExamTypes.map((ex) => (
+                      <option key={ex} value={ex}>
+                        {ex}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
+        {examInputExpanded && (
+        <>
         {/* Live toolbar */}
         <div className="px-5 py-3 bg-slate-50 border-b border-slate-200 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -837,6 +899,7 @@ export function GradesView({
                 </th>
                 <th className="px-3 py-3 w-10 text-center">No</th>
                 <th className="px-3 py-3 whitespace-nowrap">NIS</th>
+                <th className="px-3 py-3 whitespace-nowrap">NISN</th>
                 <th className="px-3 py-3 min-w-[180px]">Nama Siswa</th>
                 <th className="px-3 py-3 w-28 whitespace-nowrap">Nilai (0–100)</th>
                 <th className="px-3 py-3 whitespace-nowrap">Status KKM</th>
@@ -848,13 +911,13 @@ export function GradesView({
             <tbody className="divide-y divide-slate-100 text-slate-700">
               {!hasExamSelection ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-10 text-center text-sm text-slate-500">
+                  <td colSpan={10} className="px-4 py-10 text-center text-sm text-slate-500">
                     Silakan pilih Kelas, Mata Pelajaran, dan Jenis Ujian terlebih dahulu.
                   </td>
                 </tr>
               ) : studentsInClass.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-10 text-center text-sm text-slate-500">
+                  <td colSpan={10} className="px-4 py-10 text-center text-sm text-slate-500">
                     Belum ada siswa di kelas {selectedClass}.
                   </td>
                 </tr>
@@ -894,6 +957,9 @@ export function GradesView({
                       </td>
                       <td className="px-3 py-2.5 text-xs font-mono-tabular text-slate-600 whitespace-nowrap">
                         {st.nis}
+                      </td>
+                      <td className="px-3 py-2.5 text-xs font-mono-tabular text-slate-600 whitespace-nowrap">
+                        {st.nisn || '-'}
                       </td>
                       <td className="px-3 py-2.5 font-medium text-slate-900 whitespace-nowrap">
                         <button
@@ -978,6 +1044,8 @@ export function GradesView({
             </tbody>
           </table>
         </div>
+        </>
+        )}
       </section>
 
       {/* BAGIAN 2: RIWAYAT MATRIKS NILAI PER KELAS */}
@@ -987,7 +1055,7 @@ export function GradesView({
             matrixExpanded ? 'border-b border-slate-200' : ''
           }`}
         >
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+          <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3">
             <button
               type="button"
               onClick={() => setMatrixExpanded((prev) => !prev)}
@@ -1018,34 +1086,46 @@ export function GradesView({
             </button>
 
             {matrixExpanded && (
-            <div className="flex flex-wrap items-center gap-2.5">
-              <select
-                value={matrixClass}
-                onChange={(e) => setMatrixClass(e.target.value)}
-                aria-label="Pilih kelas matriks nilai"
-                className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
-              >
-                <option value="">--Pilih Kelas--</option>
-                {classOptions.map((c) => (
-                  <option key={c} value={c}>
-                    Kelas {c}
-                  </option>
-                ))}
-              </select>
+            <div className="flex flex-wrap items-end gap-2.5">
+              <div>
+                <label htmlFor="grd-mat-class" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                  Kelas
+                </label>
+                <select
+                  id="grd-mat-class"
+                  value={matrixClass}
+                  onChange={(e) => setMatrixClass(e.target.value)}
+                  aria-label="Pilih kelas matriks nilai"
+                  className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+                >
+                  <option value="">--Pilih Kelas--</option>
+                  {classOptions.map((c) => (
+                    <option key={c} value={c}>
+                      Kelas {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-              <select
-                value={matrixSubject}
-                onChange={(e) => setMatrixSubject(e.target.value)}
-                aria-label="Pilih mata pelajaran matriks nilai"
-                className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
-              >
-                <option value="">--Pilih Mapel--</option>
-                {settings.masterSubjects.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
+              <div>
+                <label htmlFor="grd-mat-subject" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                  Mata Pelajaran
+                </label>
+                <select
+                  id="grd-mat-subject"
+                  value={matrixSubject}
+                  onChange={(e) => setMatrixSubject(e.target.value)}
+                  aria-label="Pilih mata pelajaran matriks nilai"
+                  className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+                >
+                  <option value="">--Pilih Mapel--</option>
+                  {subjectOptions.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
               <button
                 type="button"
@@ -1151,6 +1231,8 @@ export function GradesView({
                 <th className="sticky left-10 z-30 bg-slate-100 px-3 py-3 min-w-[175px] border-r border-slate-200">
                   Nama Siswa
                 </th>
+                <th className="px-3 py-3 whitespace-nowrap">NIS</th>
+                <th className="px-3 py-3 whitespace-nowrap">NISN</th>
                 {settings.masterExamTypes.map((ex) => (
                   <th key={ex} className="px-2.5 py-3 text-center whitespace-nowrap min-w-[82px]">
                     {ex}
@@ -1168,7 +1250,7 @@ export function GradesView({
               {!hasMatrixSelection ? (
                 <tr>
                   <td
-                    colSpan={5 + settings.masterExamTypes.length}
+                    colSpan={7 + settings.masterExamTypes.length}
                     className="px-4 py-10 text-center text-sm text-slate-500"
                   >
                     Silakan pilih Kelas dan Mata Pelajaran terlebih dahulu untuk melihat matriks nilai.
@@ -1177,7 +1259,7 @@ export function GradesView({
               ) : matrixStudents.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={5 + settings.masterExamTypes.length}
+                    colSpan={7 + settings.masterExamTypes.length}
                     className="px-4 py-10 text-center text-sm text-slate-500"
                   >
                     Belum ada siswa di kelas {matrixClass}.
@@ -1230,6 +1312,12 @@ export function GradesView({
                         >
                           {st.name}
                         </button>
+                      </td>
+                      <td className="px-3 py-2 text-xs font-mono-tabular text-slate-600 whitespace-nowrap">
+                        {st.nis}
+                      </td>
+                      <td className="px-3 py-2 text-xs font-mono-tabular text-slate-600 whitespace-nowrap">
+                        {st.nisn || '-'}
                       </td>
                       {settings.masterExamTypes.map((ex) => (
                         <td key={ex} className="px-1.5 py-1.5 text-center">

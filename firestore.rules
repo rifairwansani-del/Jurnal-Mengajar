@@ -172,15 +172,24 @@ service cloud.firestore {
           'gender', 'employmentStatus', 'status', 'address', 'photo'
         ])
         && data.keys().hasOnly([
-          'id', 'nip', 'name', 'position', 'subject', 'email', 'phone',
-          'gender', 'employmentStatus', 'status', 'address', 'photo',
+          'id', 'nip', 'name', 'position', 'subject', 'subjects', 'subjectClasses',
+          'email', 'phone', 'gender', 'employmentStatus', 'status', 'address', 'photo',
           'serverCreatedAt', 'serverUpdatedAt'
         ])
         && isValidId(data.id)
         && isStr(data.nip, 64)
         && isReqStr(data.name, 160)
         && isStr(data.position, 160)
-        && isStr(data.subject, 120)
+        && isStr(data.subject, 500)
+        && (!('subjects' in data) || (
+          data.subjects is list
+          && data.subjects.size() <= 30
+          && (data.subjects.size() == 0 || (data.subjects[0] is string && data.subjects[0].size() <= 120))
+        ))
+        && (!('subjectClasses' in data) || (
+          data.subjectClasses is map
+          && data.subjectClasses.size() <= 30
+        ))
         && isStr(data.email, 160)
         && isStr(data.phone, 40)
         && data.gender in ['L', 'P']

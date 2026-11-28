@@ -23,6 +23,7 @@ import {
   testConnection,
 } from '../lib/firebase';
 import {
+  AccountRole,
   GradeEntry,
   JournalEntry,
   PortalDatabase,
@@ -38,9 +39,13 @@ import {
   UserAccount,
 } from '../types';
 import {
+  compareClassNames,
+  getAllTeacherClasses,
+  getTeacherSubjects,
   normalizeEmailId,
   normalizeKopSurat,
   normalizePhotoInputUrl,
+  normalizeTeacherSubjectClasses,
   toFirestoreSafeId,
 } from '../utils/portalHelpers';
 
@@ -124,10 +129,21 @@ function normalizeReportPrefs(
       )
     : fallback.selectedChartTypes || VALID_REPORT_CHART_IDS;
 
+  const selectedSubjects = Array.isArray(raw?.selectedSubjects)
+    ? raw.selectedSubjects.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+    : raw?.subjectFilter && raw.subjectFilter !== 'ALL'
+    ? [raw.subjectFilter]
+    : fallback.selectedSubjects || [];
+
   return {
     ...merged,
     selectedReportTypes,
     selectedChartTypes,
+    selectedSubjects,
+    selectedTeacherId:
+      typeof raw?.selectedTeacherId === 'string'
+        ? raw.selectedTeacherId
+        : fallback.selectedTeacherId ?? '',
     showSignatureImage: raw?.showSignatureImage ?? fallback.showSignatureImage,
   };
 }
@@ -231,14 +247,282 @@ function normalizeStudent(raw: Partial<Student>, fallbackIdx = 0): Student {
   };
 }
 
+function mapAccountRoleToPosition(role: AccountRole): string {
+  switch (role) {
+    case 'Kepala Sekolah':
+      return 'Kepala Sekolah';
+    case 'Wali Kelas':
+      return 'Wali Kelas';
+    case 'Guru BK':
+      return 'Guru BK';
+    case 'Admin':
+      return 'Admin / Operator Sekolah';
+    case 'Guru Mapel':
+    default:
+      return 'Guru Mata Pelajaran';
+  }
+}
+
+function mapPositionToAccountRole(position: string): AccountRole | null {
+  const norm = position.trim().toLowerCase();
+  if (!norm) return null;
+  if (norm === 'kepala sekolah') return 'Kepala Sekolah';
+  if (norm === 'wali kelas') return 'Wali Kelas';
+  if (norm === 'guru bk' || norm === 'bimbingan konseling' || norm === 'konselor') {
+    return 'Guru BK';
+  }
+  if (
+    norm === 'admin' ||
+    norm === 'admin / operator sekolah' ||
+    norm === 'operator sekolah'
+  ) {
+    return 'Admin';
+  }
+  if (norm === 'guru mata pelajaran' || norm === 'guru mapel') {
+    return 'Guru Mapel';
+  }
+  return null;
+}
+
+function isAutoSyncablePosition(position: string): boolean {
+  const trimmed = position.trim();
+  return !trimmed || mapPositionToAccountRole(trimmed) !== null;
+}
+
+const NON_MASTER_SUBJECTS = new Set([
+  '',
+  '-',
+  'umum / non-mapel',
+  'semua mata pelajaran',
+  'mapel',
+]);
+
+function addMissingSubjectsToMaster(
+  currentSubjects: string[],
+  candidates: string[]
+): string[] | null {
+  const next = [...currentSubjects];
+  const existingLower = new Set(next.map((s) => s.trim().toLowerCase()));
+  let changed = false;
+
+  candidates.forEach((raw) => {
+    const trimmed = raw.trim();
+    const lower = trimmed.toLowerCase();
+    if (!trimmed || NON_MASTER_SUBJECTS.has(lower)) return;
+    if (existingLower.has(lower)) return;
+    if (next.length >= 100) return;
+    next.push(trimmed);
+    existingLower.add(lower);
+    changed = true;
+  });
+
+  return changed ? next : null;
+}
+
+function addMissingClassesToMaster(
+  currentClasses: string[],
+  candidates: string[]
+): string[] | null {
+  const existingLower = new Set(currentClasses.map((c) => c.trim().toLowerCase()));
+  const next = [...currentClasses];
+  let changed = false;
+
+  candidates.forEach((raw) => {
+    const trimmed = raw.trim();
+    const lower = trimmed.toLowerCase();
+    if (!trimmed || trimmed === '-' || existingLower.has(lower)) return;
+    if (next.length >= 100) return;
+    next.push(trimmed);
+    existingLower.add(lower);
+    changed = true;
+  });
+
+  if (!changed) return null;
+  return next.sort(compareClassNames);
+}
+
+function makeAccountTeacherId(email: string): string {
+  const clean = normalizeEmailId(email).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  return toFirestoreSafeId(`tch-acc-${clean || Date.now()}`);
+}
+
+function findMatchingTeacherIndex(teachers: Teacher[], acc: UserAccount): number {
+  const emailLower = normalizeEmailId(acc.email || acc.id);
+  const expectedId = makeAccountTeacherId(emailLower);
+  const nipLower = (acc.nip || '').trim().toLowerCase();
+  const nameLower = (acc.name || '').trim().toLowerCase();
+
+  let idx = teachers.findIndex((t) => t.id === expectedId);
+  if (idx >= 0) return idx;
+  if (emailLower) {
+    idx = teachers.findIndex((t) => normalizeEmailId(t.email || '') === emailLower);
+    if (idx >= 0) return idx;
+  }
+  if (nipLower) {
+    idx = teachers.findIndex((t) => (t.nip || '').trim().toLowerCase() === nipLower);
+    if (idx >= 0) return idx;
+  }
+  if (nameLower) {
+    idx = teachers.findIndex((t) => (t.name || '').trim().toLowerCase() === nameLower);
+    if (idx >= 0) return idx;
+  }
+  return -1;
+}
+
+function hasMatchingTeacherForAccount(teachers: Teacher[], acc: UserAccount): boolean {
+  return findMatchingTeacherIndex(teachers, acc) >= 0;
+}
+
+function findMatchingAccountIndexForTeacher(
+  accounts: UserAccount[],
+  teacher: Teacher
+): number {
+  const emailLower = normalizeEmailId(teacher.email || '');
+  const nipLower = (teacher.nip || '').trim().toLowerCase();
+  const nameLower = (teacher.name || '').trim().toLowerCase();
+
+  let idx = accounts.findIndex((a) => makeAccountTeacherId(a.email || a.id) === teacher.id);
+  if (idx >= 0) return idx;
+  if (emailLower) {
+    idx = accounts.findIndex((a) => normalizeEmailId(a.email || a.id) === emailLower);
+    if (idx >= 0) return idx;
+  }
+  if (nipLower) {
+    idx = accounts.findIndex((a) => (a.nip || '').trim().toLowerCase() === nipLower);
+    if (idx >= 0) return idx;
+  }
+  if (nameLower) {
+    idx = accounts.findIndex((a) => (a.name || '').trim().toLowerCase() === nameLower);
+    if (idx >= 0) return idx;
+  }
+  return -1;
+}
+
+function resolveDefaultSubjectForRole(role: AccountRole, fallbackSubject: string): string {
+  if (role === 'Guru BK') return 'Bimbingan Konseling';
+  if (role === 'Kepala Sekolah' || role === 'Admin') return 'Umum / Non-Mapel';
+  return fallbackSubject || '-';
+}
+
+function buildTeacherFromAccount(acc: UserAccount, defaultSubject: string): Teacher {
+  const emailLower = normalizeEmailId(acc.email || acc.id);
+  return normalizeTeacher({
+    id: makeAccountTeacherId(emailLower),
+    nip: acc.nip || '',
+    name: acc.name || emailLower,
+    position: mapAccountRoleToPosition(acc.role),
+    subject: resolveDefaultSubjectForRole(acc.role, defaultSubject),
+    email: emailLower,
+    phone: '',
+    gender: 'L',
+    employmentStatus: 'PNS',
+    status: acc.status === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
+    address: '',
+    photo: '',
+  });
+}
+
+function mergeTeacherWithAccount(
+  existing: Teacher,
+  acc: UserAccount,
+  defaultSubject: string
+): { teacher: Teacher; changed: boolean } {
+  const emailLower = normalizeEmailId(acc.email || acc.id);
+  const expectedId = makeAccountTeacherId(emailLower);
+  const isPrimaryLinked =
+    existing.id === expectedId ||
+    (Boolean(emailLower) && normalizeEmailId(existing.email || '') === emailLower);
+
+  const nextEmail = !existing.email.trim() && emailLower ? emailLower : existing.email;
+  const nextNip =
+    acc.nip.trim() && (!existing.nip.trim() || isPrimaryLinked)
+      ? acc.nip.trim()
+      : existing.nip;
+  const nextName =
+    acc.name.trim() &&
+    (!existing.name.trim() || existing.name === 'Tanpa Nama' || isPrimaryLinked)
+      ? acc.name.trim()
+      : existing.name;
+  const mappedPos = mapAccountRoleToPosition(acc.role);
+  const nextPosition = isAutoSyncablePosition(existing.position)
+    ? mappedPos
+    : existing.position;
+  const nextSubject =
+    !existing.subject.trim() || existing.subject === '-'
+      ? resolveDefaultSubjectForRole(acc.role, defaultSubject)
+      : existing.subject;
+  const nextStatus: Teacher['status'] =
+    acc.status === 'Nonaktif'
+      ? 'Nonaktif'
+      : existing.status === 'Nonaktif'
+      ? 'Aktif'
+      : existing.status;
+
+  const nextSubjects =
+    existing.subjects && existing.subjects.length > 0
+      ? existing.subjects
+      : getTeacherSubjects({ subject: nextSubject });
+
+  const updated = normalizeTeacher({
+    ...existing,
+    email: nextEmail,
+    nip: nextNip,
+    name: nextName,
+    position: nextPosition,
+    subject: nextSubject,
+    subjects: nextSubjects,
+    subjectClasses: existing.subjectClasses,
+    status: nextStatus,
+  });
+
+  const changed =
+    updated.email !== existing.email ||
+    updated.nip !== existing.nip ||
+    updated.name !== existing.name ||
+    updated.position !== existing.position ||
+    updated.subject !== existing.subject ||
+    updated.status !== existing.status;
+
+  return { teacher: updated, changed };
+}
+
 function normalizeTeacher(raw: Partial<Teacher>, fallbackIdx = 0): Teacher {
   const safeId = clampStr(toFirestoreSafeId(raw.id || `tch-${Date.now()}-${fallbackIdx}`), 160);
+  const extractedSubjects = getTeacherSubjects({
+    subject: typeof raw.subject === 'string' ? raw.subject : '',
+    subjects: Array.isArray(raw.subjects) ? raw.subjects : undefined,
+    subjectClasses:
+      raw.subjectClasses && typeof raw.subjectClasses === 'object' ? raw.subjectClasses : undefined,
+  })
+    .map((s) => clampStr(s, 120))
+    .filter(Boolean)
+    .slice(0, 30);
+
+  const normalizedSubjectClasses = normalizeTeacherSubjectClasses(
+    extractedSubjects,
+    raw.subjectClasses && typeof raw.subjectClasses === 'object' ? raw.subjectClasses : undefined
+  );
+
+  const limitedSubjectClasses: Record<string, string[]> = {};
+  Object.entries(normalizedSubjectClasses)
+    .slice(0, 30)
+    .forEach(([k, clsList]) => {
+      limitedSubjectClasses[clampStr(k, 120)] = clsList.slice(0, 60).map((c) => clampStr(c, 64));
+    });
+
+  const subjectSummary =
+    extractedSubjects.length > 0
+      ? clampStr(extractedSubjects.join(', '), 500)
+      : clampStr(raw.subject, 500);
+
   return {
     id: safeId || `tch-${Date.now()}-${fallbackIdx}`,
     nip: clampStr(raw.nip, 64),
     name: clampStr(raw.name, 160) || 'Tanpa Nama',
     position: clampStr(raw.position, 160),
-    subject: clampStr(raw.subject, 120),
+    subject: subjectSummary,
+    subjects: extractedSubjects,
+    subjectClasses: limitedSubjectClasses,
     email: clampStr(raw.email, 160),
     phone: clampStr(raw.phone, 40),
     gender: raw.gender === 'P' ? 'P' : 'L',
@@ -423,6 +707,7 @@ export function usePortalStore() {
   const localTokenRef = useRef<string | null>(null);
   const credentialsMetaRef = useRef<Record<string, { username: string; hasPassword: boolean }>>({});
   const initialServerSyncedRef = useRef(false);
+  const autoSyncedTeachersRef = useRef(false);
 
   const cleanupListeners = useCallback(() => {
     unsubsRef.current.forEach((unsub) => unsub());
@@ -478,9 +763,57 @@ export function usePortalStore() {
     [getActiveBearerToken]
   );
 
+  const applyPublicIdentity = useCallback(async () => {
+    try {
+      const res = await fetch('/api/public/identity');
+      if (!res.ok) return;
+      const json = (await res.json()) as {
+        ok?: boolean;
+        hasSavedSettings?: boolean;
+        academicYear?: string;
+        semester?: SemesterType;
+        masterAcademicYears?: string[];
+        themeId?: SystemSettings['themeId'];
+        identity?: SystemSettings['identity'] | null;
+      };
+      if (!json.ok || !json.hasSavedSettings) return;
+      if (authModeRef.current !== 'none') return;
+      setDb((prev) => {
+        if (prev.session.isLoggedIn) return prev;
+        const nextYears =
+          Array.isArray(json.masterAcademicYears) && json.masterAcademicYears.length > 0
+            ? json.masterAcademicYears
+            : prev.settings.masterAcademicYears;
+        const nextYear = json.academicYear || prev.settings.academicYear;
+        const nextSem = json.semester === 'Genap' ? 'Genap' : json.semester === 'Ganjil' ? 'Ganjil' : prev.settings.semester;
+        return {
+          ...prev,
+          settings: normalizeSettings({
+            ...prev.settings,
+            academicYear: nextYear,
+            semester: nextSem,
+            masterAcademicYears: nextYears.includes(nextYear)
+              ? nextYears
+              : [...nextYears, nextYear],
+            ...(json.themeId ? { themeId: json.themeId } : {}),
+            ...(json.identity ? { identity: { ...prev.settings.identity, ...json.identity } } : {}),
+          }),
+          session: {
+            ...prev.session,
+            academicYear: nextYear,
+            semester: nextSem,
+          },
+        };
+      });
+    } catch {
+      // Non-fatal if backend is still starting
+    }
+  }, []);
+
   useEffect(() => {
     void testConnection();
-  }, []);
+    void applyPublicIdentity();
+  }, [applyPublicIdentity]);
 
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser: User | null) => {
@@ -494,6 +827,7 @@ export function usePortalStore() {
         authModeRef.current = 'none';
         initialServerSyncedRef.current = false;
         setDb(createEmptyDatabase());
+        void applyPublicIdentity();
         setAccessDeniedMessage(null);
         setPendingUserEmail(null);
         setDataLoading(false);
@@ -1267,16 +1601,25 @@ export function usePortalStore() {
 
         const snapDb = json.snapshot?.database;
         const baseSettings = snapDb?.settings || createDefaultSettings();
+        const fallbackYear = createDefaultSettings().academicYear;
+        const resolvedYear =
+          applyPeriodOverride && academicYear
+            ? academicYear
+            : baseSettings.academicYear || academicYear || fallbackYear;
+        const resolvedSem =
+          applyPeriodOverride && semester
+            ? semester
+            : baseSettings.semester || semester || 'Ganjil';
+        const existingMasterYears = Array.isArray(baseSettings.masterAcademicYears)
+          ? baseSettings.masterAcademicYears
+          : createDefaultSettings().masterAcademicYears;
         const mergedSettings = normalizeSettings({
           ...baseSettings,
-          academicYear:
-            applyPeriodOverride && academicYear
-              ? academicYear
-              : baseSettings.academicYear || academicYear || '2025/2026',
-          semester:
-            applyPeriodOverride && semester
-              ? semester
-              : baseSettings.semester || semester || 'Ganjil',
+          academicYear: resolvedYear,
+          semester: resolvedSem,
+          masterAcademicYears: existingMasterYears.includes(resolvedYear)
+            ? existingMasterYears
+            : [...existingMasterYears, resolvedYear],
         });
 
         const accountsList = Array.isArray(snapDb?.accounts)
@@ -1336,13 +1679,16 @@ export function usePortalStore() {
         };
 
         setDb(nextDb);
+        if (applyPeriodOverride) {
+          void pushSnapshotToServer(nextDb);
+        }
         setDataLoading(false);
         setAuthLoading(false);
       } finally {
         setSigningIn(false);
       }
     },
-    [cleanupListeners]
+    [cleanupListeners, pushSnapshotToServer]
   );
 
   const logout = useCallback(async () => {
@@ -1351,6 +1697,7 @@ export function usePortalStore() {
     localTokenRef.current = null;
     authModeRef.current = 'none';
     initialServerSyncedRef.current = false;
+    autoSyncedTeachersRef.current = false;
     setAccessDeniedMessage(null);
     setPendingUserEmail(null);
     if (auth.currentUser) {
@@ -1983,15 +2330,95 @@ export function usePortalStore() {
   // Teachers
   const upsertTeacher = useCallback(
     (teacher: Teacher) => {
+      const cur = dbRef.current;
       const safeId = toFirestoreSafeId(teacher.id);
       const cleanTeacher = normalizeTeacher({ ...teacher, id: safeId });
-      const existsLocally = dbRef.current.teachers.some((t) => t.id === safeId);
+      const existsLocally = cur.teachers.some((t) => t.id === safeId);
+
+      const updatedMasterSubjects = addMissingSubjectsToMaster(
+        cur.settings.masterSubjects,
+        getTeacherSubjects(cleanTeacher)
+      );
+      const updatedMasterClasses = addMissingClassesToMaster(
+        cur.settings.masterClasses,
+        getAllTeacherClasses(cleanTeacher)
+      );
+
+      const isBootstrap =
+        normalizeEmailId(cur.session.email) === DEFAULT_ADMIN_EMAIL;
+      const isAdminSession =
+        authModeRef.current === 'credentials' ||
+        isBootstrap ||
+        cur.session.userRole === 'Admin';
+
+      let nextAccounts = cur.accounts;
+      let syncedAccount: UserAccount | null = null;
+      const accIdx = findMatchingAccountIndexForTeacher(cur.accounts, cleanTeacher);
+      if (accIdx >= 0 && isAdminSession) {
+        const targetAcc = cur.accounts[accIdx];
+        const targetEmail = normalizeEmailId(targetAcc.email || targetAcc.id);
+        const mappedRole = mapPositionToAccountRole(cleanTeacher.position);
+        const nextRole: AccountRole =
+          targetEmail === DEFAULT_ADMIN_EMAIL
+            ? 'Admin'
+            : mappedRole || targetAcc.role;
+        const nextStatus: 'Aktif' | 'Nonaktif' =
+          targetEmail === DEFAULT_ADMIN_EMAIL
+            ? 'Aktif'
+            : cleanTeacher.status === 'Nonaktif'
+            ? 'Nonaktif'
+            : 'Aktif';
+        const nextName = cleanTeacher.name.trim() || targetAcc.name;
+        const nextNip = cleanTeacher.nip.trim();
+
+        if (
+          nextName !== targetAcc.name ||
+          nextNip !== targetAcc.nip ||
+          nextRole !== targetAcc.role ||
+          nextStatus !== targetAcc.status
+        ) {
+          syncedAccount = normalizeAccount(
+            {
+              ...targetAcc,
+              name: nextName,
+              nip: nextNip,
+              role: nextRole,
+              status: nextStatus,
+            },
+            ''
+          );
+          nextAccounts = cur.accounts.map((a, idx) =>
+            idx === accIdx ? syncedAccount! : a
+          );
+        }
+      }
+
+      const isCurrentAccountSynced =
+        syncedAccount &&
+        normalizeEmailId(cur.session.accountId || cur.session.email) ===
+          normalizeEmailId(syncedAccount.email || syncedAccount.id);
 
       const nextDb: PortalDatabase = {
-        ...dbRef.current,
+        ...cur,
         teachers: existsLocally
-          ? dbRef.current.teachers.map((t) => (t.id === safeId ? cleanTeacher : t))
-          : [...dbRef.current.teachers, cleanTeacher],
+          ? cur.teachers.map((t) => (t.id === safeId ? cleanTeacher : t))
+          : [...cur.teachers, cleanTeacher],
+        accounts: nextAccounts,
+        settings:
+          updatedMasterSubjects || updatedMasterClasses
+            ? {
+                ...cur.settings,
+                ...(updatedMasterSubjects ? { masterSubjects: updatedMasterSubjects } : {}),
+                ...(updatedMasterClasses ? { masterClasses: updatedMasterClasses } : {}),
+              }
+            : cur.settings,
+        session: isCurrentAccountSynced && syncedAccount
+          ? {
+              ...cur.session,
+              userName: syncedAccount.name,
+              userRole: isBootstrap ? 'Admin' : syncedAccount.role,
+            }
+          : cur.session,
       };
       setDb(nextDb);
 
@@ -2000,14 +2427,38 @@ export function usePortalStore() {
         return;
       }
 
-      void upsertDocSafe('teachers', safeId, cleanTeacher as unknown as Record<string, unknown>).catch(
-        (err) =>
+      void (async () => {
+        try {
+          await upsertDocSafe(
+            'teachers',
+            safeId,
+            cleanTeacher as unknown as Record<string, unknown>
+          );
+          if (updatedMasterSubjects || updatedMasterClasses) {
+            const settingsSnap = await getDoc(doc(firestoreDb, 'settings', 'global'));
+            if (settingsSnap.exists()) {
+              await updateDoc(doc(firestoreDb, 'settings', 'global'), {
+                ...(updatedMasterSubjects ? { masterSubjects: updatedMasterSubjects } : {}),
+                ...(updatedMasterClasses ? { masterClasses: updatedMasterClasses } : {}),
+                serverUpdatedAt: serverTimestamp(),
+              });
+            }
+          }
+          if (syncedAccount) {
+            await upsertDocSafe(
+              'accounts',
+              syncedAccount.id,
+              syncedAccount as unknown as Record<string, unknown>
+            );
+          }
+        } catch (err) {
           reportFirestoreError(
             err,
             existsLocally ? OperationType.UPDATE : OperationType.CREATE,
             `teachers/${safeId}`
-          )
-      );
+          );
+        }
+      })();
     },
     [pushSnapshotToServer, reportFirestoreError]
   );
@@ -2047,7 +2498,27 @@ export function usePortalStore() {
 
       if (recordsToSave.length === 0) return { added: 0, updated: 0 };
 
-      const nextDb: PortalDatabase = { ...dbRef.current, teachers: next };
+      const updatedMasterSubjects = addMissingSubjectsToMaster(
+        dbRef.current.settings.masterSubjects,
+        recordsToSave.flatMap((r) => getTeacherSubjects(r))
+      );
+      const updatedMasterClasses = addMissingClassesToMaster(
+        dbRef.current.settings.masterClasses,
+        recordsToSave.flatMap((r) => getAllTeacherClasses(r))
+      );
+
+      const nextDb: PortalDatabase = {
+        ...dbRef.current,
+        teachers: next,
+        settings:
+          updatedMasterSubjects || updatedMasterClasses
+            ? {
+                ...dbRef.current.settings,
+                ...(updatedMasterSubjects ? { masterSubjects: updatedMasterSubjects } : {}),
+                ...(updatedMasterClasses ? { masterClasses: updatedMasterClasses } : {}),
+              }
+            : dbRef.current.settings,
+      };
       setDb(nextDb);
 
       if (authModeRef.current === 'credentials') {
@@ -2074,6 +2545,21 @@ export function usePortalStore() {
                   },
             };
           });
+          if (updatedMasterSubjects || updatedMasterClasses) {
+            const settingsSnap = await getDoc(doc(firestoreDb, 'settings', 'global'));
+            if (settingsSnap.exists()) {
+              ops.push({
+                type: 'update',
+                collectionName: 'settings',
+                docId: 'global',
+                data: {
+                  ...(updatedMasterSubjects ? { masterSubjects: updatedMasterSubjects } : {}),
+                  ...(updatedMasterClasses ? { masterClasses: updatedMasterClasses } : {}),
+                  serverUpdatedAt: serverTimestamp(),
+                },
+              });
+            }
+          }
           await commitBatchChunked(ops);
         } catch (err) {
           reportFirestoreError(err, OperationType.WRITE, 'teachers');
@@ -2131,6 +2617,115 @@ export function usePortalStore() {
     },
     [pushSnapshotToServer, reportFirestoreError]
   );
+
+  const syncTeachersFromAccounts = useCallback((): { added: number; updated: number } => {
+    const cur = dbRef.current;
+    const defaultSubject = cur.settings.masterSubjects[0] || '-';
+    const nextTeachers = [...cur.teachers];
+    const recordsToSave: Teacher[] = [];
+    let added = 0;
+    let updated = 0;
+
+    cur.accounts.forEach((acc) => {
+      if (!acc.name.trim()) return;
+      const matchIdx = findMatchingTeacherIndex(nextTeachers, acc);
+      if (matchIdx < 0) {
+        const teacher = buildTeacherFromAccount(acc, defaultSubject);
+        nextTeachers.push(teacher);
+        recordsToSave.push(teacher);
+        added += 1;
+      } else {
+        const { teacher: merged, changed } = mergeTeacherWithAccount(
+          nextTeachers[matchIdx],
+          acc,
+          defaultSubject
+        );
+        if (changed) {
+          nextTeachers[matchIdx] = merged;
+          recordsToSave.push(merged);
+          updated += 1;
+        }
+      }
+    });
+
+    const updatedMasterSubjects = addMissingSubjectsToMaster(
+      cur.settings.masterSubjects,
+      nextTeachers.flatMap((t) => getTeacherSubjects(t))
+    );
+
+    if (recordsToSave.length === 0 && !updatedMasterSubjects) {
+      return { added: 0, updated: 0 };
+    }
+
+    const nextDb: PortalDatabase = {
+      ...cur,
+      teachers: nextTeachers,
+      settings: updatedMasterSubjects
+        ? { ...cur.settings, masterSubjects: updatedMasterSubjects }
+        : cur.settings,
+    };
+    setDb(nextDb);
+
+    if (authModeRef.current === 'credentials') {
+      void pushSnapshotToServer(nextDb);
+      return { added, updated };
+    }
+
+    void (async () => {
+      try {
+        const ops: BatchWriteOp[] = [];
+        if (recordsToSave.length > 0) {
+          const existingSnap = await getDocs(collection(firestoreDb, 'teachers'));
+          const existingIds = new Set(existingSnap.docs.map((d) => d.id));
+          recordsToSave.forEach((rec) => {
+            const existsInDb = existingIds.has(rec.id);
+            ops.push({
+              type: existsInDb ? 'update' : 'set',
+              collectionName: 'teachers',
+              docId: rec.id,
+              data: existsInDb
+                ? { ...rec, serverUpdatedAt: serverTimestamp() }
+                : {
+                    ...rec,
+                    serverCreatedAt: serverTimestamp(),
+                    serverUpdatedAt: serverTimestamp(),
+                  },
+            });
+          });
+        }
+        if (updatedMasterSubjects) {
+          const settingsSnap = await getDoc(doc(firestoreDb, 'settings', 'global'));
+          if (settingsSnap.exists()) {
+            ops.push({
+              type: 'update',
+              collectionName: 'settings',
+              docId: 'global',
+              data: {
+                masterSubjects: updatedMasterSubjects,
+                serverUpdatedAt: serverTimestamp(),
+              },
+            });
+          }
+        }
+        if (ops.length > 0) {
+          await commitBatchChunked(ops);
+        }
+      } catch (err) {
+        reportFirestoreError(err, OperationType.WRITE, 'teachers');
+      }
+    })();
+
+    return { added, updated };
+  }, [pushSnapshotToServer, reportFirestoreError]);
+
+  useEffect(() => {
+    if (!db.session.isLoggedIn || dataLoading || autoSyncedTeachersRef.current) return;
+    if (db.accounts.length === 0) return;
+    autoSyncedTeachersRef.current = true;
+    if (db.teachers.length === 0) {
+      syncTeachersFromAccounts();
+    }
+  }, [db.session.isLoggedIn, db.teachers.length, db.accounts.length, dataLoading, syncTeachersFromAccounts]);
 
   // User Accounts (keyed by normalized lowercase email)
   const upsertAccount = useCallback(
@@ -2241,8 +2836,33 @@ export function usePortalStore() {
         normalizeEmailId(dbRef.current.session.accountId || dbRef.current.session.email) ===
         emailLower;
 
+      const defaultSubject = dbRef.current.settings.masterSubjects[0] || '-';
+      const matchTeacherIdx = findMatchingTeacherIndex(
+        dbRef.current.teachers,
+        cleanAccount
+      );
+      let syncedTeacher: Teacher | null = null;
+      let nextTeachers = dbRef.current.teachers;
+      if (matchTeacherIdx < 0) {
+        syncedTeacher = buildTeacherFromAccount(cleanAccount, defaultSubject);
+        nextTeachers = [...dbRef.current.teachers, syncedTeacher];
+      } else {
+        const { teacher: merged, changed } = mergeTeacherWithAccount(
+          dbRef.current.teachers[matchTeacherIdx],
+          cleanAccount,
+          defaultSubject
+        );
+        if (changed) {
+          syncedTeacher = merged;
+          nextTeachers = dbRef.current.teachers.map((t, idx) =>
+            idx === matchTeacherIdx ? merged : t
+          );
+        }
+      }
+
       const nextDb: PortalDatabase = {
         ...dbRef.current,
+        teachers: nextTeachers,
         accounts: nextAccounts,
         session: isCurrent
           ? {
@@ -2314,6 +2934,21 @@ export function usePortalStore() {
               serverCreatedAt: serverTimestamp(),
               serverUpdatedAt: serverTimestamp(),
             },
+          });
+        }
+        if (syncedTeacher) {
+          const teacherSnap = await getDoc(doc(firestoreDb, 'teachers', syncedTeacher.id));
+          ops.push({
+            type: teacherSnap.exists() ? 'update' : 'set',
+            collectionName: 'teachers',
+            docId: syncedTeacher.id,
+            data: teacherSnap.exists()
+              ? { ...syncedTeacher, serverUpdatedAt: serverTimestamp() }
+              : {
+                  ...syncedTeacher,
+                  serverCreatedAt: serverTimestamp(),
+                  serverUpdatedAt: serverTimestamp(),
+                },
           });
         }
         if (isAdminSession && syncedCredentialRecord) {
@@ -2391,7 +3026,33 @@ export function usePortalStore() {
 
       if (normalizedRecords.length === 0) return { added: 0, updated: 0 };
 
-      const nextDb: PortalDatabase = { ...dbRef.current, accounts: next };
+      const nextTeachers = [...dbRef.current.teachers];
+      const newSyncedTeachers: Teacher[] = [];
+      const defaultSubject = dbRef.current.settings.masterSubjects[0] || '-';
+      normalizedRecords.forEach((acc) => {
+        const matchIdx = findMatchingTeacherIndex(nextTeachers, acc);
+        if (matchIdx < 0) {
+          const t = buildTeacherFromAccount(acc, defaultSubject);
+          nextTeachers.push(t);
+          newSyncedTeachers.push(t);
+        } else {
+          const { teacher: merged, changed } = mergeTeacherWithAccount(
+            nextTeachers[matchIdx],
+            acc,
+            defaultSubject
+          );
+          if (changed) {
+            nextTeachers[matchIdx] = merged;
+            newSyncedTeachers.push(merged);
+          }
+        }
+      });
+
+      const nextDb: PortalDatabase = {
+        ...dbRef.current,
+        teachers: nextTeachers,
+        accounts: next,
+      };
       setDb(nextDb);
 
       if (authModeRef.current === 'credentials') {
@@ -2433,6 +3094,25 @@ export function usePortalStore() {
               },
             };
           });
+          if (newSyncedTeachers.length > 0) {
+            const existingTeachersSnap = await getDocs(collection(firestoreDb, 'teachers'));
+            const existingTeacherIds = new Set(existingTeachersSnap.docs.map((d) => d.id));
+            newSyncedTeachers.forEach((t) => {
+              const existsInDb = existingTeacherIds.has(t.id);
+              ops.push({
+                type: existsInDb ? 'update' : 'set',
+                collectionName: 'teachers',
+                docId: t.id,
+                data: existsInDb
+                  ? { ...t, serverUpdatedAt: serverTimestamp() }
+                  : {
+                      ...t,
+                      serverCreatedAt: serverTimestamp(),
+                      serverUpdatedAt: serverTimestamp(),
+                    },
+              });
+            });
+          }
           await commitBatchChunked(ops);
         } catch (err) {
           reportFirestoreError(err, OperationType.WRITE, 'accounts');
@@ -2586,6 +3266,23 @@ export function usePortalStore() {
       );
     },
     [pushSnapshotToServer, reportFirestoreError]
+  );
+
+  const setActivePeriod = useCallback(
+    (academicYear: string, semester: SemesterType) => {
+      const cleanYear = clampStr(academicYear, 32).trim();
+      if (!cleanYear) return;
+      const cleanSem: SemesterType = semester === 'Genap' ? 'Genap' : 'Ganjil';
+      updateSettings((prev) => ({
+        ...prev,
+        academicYear: cleanYear,
+        semester: cleanSem,
+        masterAcademicYears: prev.masterAcademicYears.includes(cleanYear)
+          ? prev.masterAcademicYears
+          : [...prev.masterAcademicYears, cleanYear],
+      }));
+    },
+    [updateSettings]
   );
 
   // Backup & Restore
@@ -2820,11 +3517,13 @@ export function usePortalStore() {
     importTeachersBatch,
     deleteTeacher,
     deleteTeachersBatch,
+    syncTeachersFromAccounts,
     upsertAccount,
     importAccountsBatch,
     deleteAccount,
     deleteAccountsBatch,
     updateSettings,
+    setActivePeriod,
     restoreDatabase,
     resetAllData,
   };

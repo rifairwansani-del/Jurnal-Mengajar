@@ -17,7 +17,7 @@ import {
   exportRowsToXlsx,
   printDatasetExact,
 } from '../utils/exportHelpers';
-import { compareClassNames, getTodayISO } from '../utils/portalHelpers';
+import { compareClassNames, getTeacherSubjects, getTodayISO } from '../utils/portalHelpers';
 import { ConfirmDialogState } from './FeedbackUI';
 import { FormModal } from './FormModal';
 import { TableExportToolbar } from './TableExportToolbar';
@@ -55,6 +55,14 @@ export function ScheduleView({
     });
     return Array.from(set).sort(compareClassNames);
   }, [settings.masterClasses, students]);
+
+  const subjectOptions = useMemo(() => {
+    const set = new Set(settings.masterSubjects);
+    teachers.forEach((t) => {
+      getTeacherSubjects(t).forEach((subj) => set.add(subj));
+    });
+    return Array.from(set);
+  }, [settings.masterSubjects, teachers]);
 
   const teacherOptions = useMemo(() => {
     const set = new Set<string>();
@@ -406,46 +414,64 @@ export function ScheduleView({
               </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2.5">
-              <select
-                value={filterDay}
-                onChange={(e) => setFilterDay(e.target.value)}
-                aria-label="Filter hari"
-                className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
-              >
-                <option value="">--Pilih Hari--</option>
-                <option value="ALL">Semua Hari</option>
-                {DAYS_OF_WEEK.map((d) => (
-                  <option key={d} value={d}>
-                    {d}
-                  </option>
-                ))}
-              </select>
+            <div className="flex flex-wrap items-end gap-2.5">
+              <div>
+                <label htmlFor="sch-filter-day" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                  Hari
+                </label>
+                <select
+                  id="sch-filter-day"
+                  value={filterDay}
+                  onChange={(e) => setFilterDay(e.target.value)}
+                  aria-label="Filter hari"
+                  className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+                >
+                  <option value="">--Pilih Hari--</option>
+                  <option value="ALL">Semua Hari</option>
+                  {DAYS_OF_WEEK.map((d) => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-              <select
-                value={filterClass}
-                onChange={(e) => setFilterClass(e.target.value)}
-                aria-label="Filter kelas"
-                className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
-              >
-                <option value="">--Pilih Kelas--</option>
-                <option value="ALL">Semua Kelas</option>
-                {classOptions.map((c) => (
-                  <option key={c} value={c}>
-                    Kelas {c}
-                  </option>
-                ))}
-              </select>
+              <div>
+                <label htmlFor="sch-filter-class" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                  Kelas
+                </label>
+                <select
+                  id="sch-filter-class"
+                  value={filterClass}
+                  onChange={(e) => setFilterClass(e.target.value)}
+                  aria-label="Filter kelas"
+                  className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+                >
+                  <option value="">--Pilih Kelas--</option>
+                  <option value="ALL">Semua Kelas</option>
+                  {classOptions.map((c) => (
+                    <option key={c} value={c}>
+                      Kelas {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-              <div className="relative">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Cari mapel / guru..."
-                  className="pl-9 pr-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600 w-44 sm:w-52"
-                />
+              <div>
+                <label htmlFor="sch-filter-search" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                  Cari Jadwal
+                </label>
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    id="sch-filter-search"
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Cari mapel / guru..."
+                    className="pl-9 pr-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600 w-44 sm:w-52"
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -714,7 +740,7 @@ export function ScheduleView({
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
               >
                 <option value="">--Pilih Mapel--</option>
-                {settings.masterSubjects.map((s) => (
+                {subjectOptions.map((s) => (
                   <option key={s} value={s}>
                     {s}
                   </option>
@@ -730,7 +756,23 @@ export function ScheduleView({
                 id="sch-teacher"
                 list="schedule-teacher-list"
                 value={teacherName}
-                onChange={(e) => setTeacherName(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setTeacherName(val);
+                  if (!subject) {
+                    const matched = teachers.find(
+                      (t) => t.name.trim().toLowerCase() === val.trim().toLowerCase()
+                    );
+                    if (
+                      matched?.subject &&
+                      matched.subject !== '-' &&
+                      matched.subject !== 'Umum / Non-Mapel' &&
+                      matched.subject !== 'Semua Mata Pelajaran'
+                    ) {
+                      setSubject(matched.subject);
+                    }
+                  }
+                }}
                 placeholder="Nama guru pengampu"
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600"
               />

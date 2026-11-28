@@ -78,14 +78,16 @@
     },
     "Teacher": {
       "title": "Teacher",
-      "description": "Teacher master record.",
+      "description": "Teacher master record including multi-subject and per-subject class assignments.",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
         "nip": { "type": "string" },
         "name": { "type": "string" },
         "position": { "type": "string" },
-        "subject": { "type": "string" },
+        "subject": { "type": "string", "maxLength": 500 },
+        "subjects": { "type": "array", "items": { "type": "string" } },
+        "subjectClasses": { "type": "object" },
         "email": { "type": "string" },
         "phone": { "type": "string" },
         "gender": { "type": "string", "enum": ["L", "P"] },

@@ -48,13 +48,20 @@ export function LoginView({
   onSwitchAccount,
 }: LoginViewProps) {
   const [loginMode, setLoginMode] = useState<'credentials' | 'google'>('credentials');
-  const [academicYear, setAcademicYear] = useState(settings.academicYear || '2025/2026');
+  const [academicYear, setAcademicYear] = useState(settings.academicYear || '');
   const [semester, setSemester] = useState<SemesterType | ''>(settings.semester || 'Ganjil');
   const [periodChangedByUser, setPeriodChangedByUser] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+
+  const yearOptions = React.useMemo(() => {
+    const set = new Set(settings.masterAcademicYears);
+    if (settings.academicYear) set.add(settings.academicYear);
+    if (academicYear) set.add(academicYear);
+    return Array.from(set).filter(Boolean).sort();
+  }, [settings.masterAcademicYears, settings.academicYear, academicYear]);
 
   useEffect(() => {
     if (periodChangedByUser) return;
@@ -184,7 +191,7 @@ export function LoginView({
                   className="w-full bg-transparent text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer"
                 >
                   <option value="">--Pilih Tahun Ajaran--</option>
-                  {settings.masterAcademicYears.map((yr) => (
+                  {yearOptions.map((yr) => (
                     <option key={yr} value={yr}>
                       {yr}
                     </option>

@@ -8,6 +8,7 @@ import {
   KopTextAlign,
   PrintFontFamily,
   Student,
+  Teacher,
 } from '../types';
 
 export const ATTENDANCE_STATUS_META: Record<
@@ -200,29 +201,40 @@ export function makeGradeId(
   return `${safe(academicYear)}__${safe(semester)}__${safe(className)}__${safe(subject)}__${safe(examType)}__${safe(studentId)}`;
 }
 
-export async function imageUrlToPngDataUrl(src: string): Promise<string | null> {
+export interface PngImageInfo {
+  dataUrl: string;
+  width: number;
+  height: number;
+}
+
+export async function imageUrlToPngWithMeta(src: string): Promise<PngImageInfo | null> {
   if (!src) return null;
-  if (src.startsWith('data:image/png')) return src;
   return new Promise((resolve) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
       try {
+        const natW = img.naturalWidth || img.width || 240;
+        const natH = img.naturalHeight || img.height || 240;
+        if (src.startsWith('data:image/png')) {
+          resolve({ dataUrl: src, width: natW, height: natH });
+          return;
+        }
+        const maxDim = 480;
+        const scale = Math.min(1, maxDim / Math.max(natW, natH));
+        const w = Math.max(1, Math.round(natW * scale));
+        const h = Math.max(1, Math.round(natH * scale));
         const canvas = document.createElement('canvas');
-        const size = 240;
-        canvas.width = size;
-        canvas.height = size;
+        canvas.width = w;
+        canvas.height = h;
         const ctx = canvas.getContext('2d');
         if (!ctx) {
           resolve(null);
           return;
         }
-        ctx.clearRect(0, 0, size, size);
-        const ratio = Math.min(size / (img.width || size), size / (img.height || size));
-        const w = (img.width || size) * ratio;
-        const h = (img.height || size) * ratio;
-        ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h);
-        resolve(canvas.toDataURL('image/png'));
+        ctx.clearRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve({ dataUrl: canvas.toDataURL('image/png'), width: w, height: h });
       } catch {
         resolve(null);
       }
@@ -230,6 +242,135 @@ export async function imageUrlToPngDataUrl(src: string): Promise<string | null> 
     img.onerror = () => resolve(null);
     img.src = src;
   });
+}
+
+export async function imageUrlToPngDataUrl(src: string): Promise<string | null> {
+  const info = await imageUrlToPngWithMeta(src);
+  return info ? info.dataUrl : null;
+}
+
+export function fitContainDimensions(
+  natW: number,
+  natH: number,
+  boxW: number,
+  boxH: number
+): { width: number; height: number } {
+  if (natW <= 0 || natH <= 0) return { width: boxW, height: boxH };
+  const ratio = Math.min(boxW / natW, boxH / natH);
+  return {
+    width: Math.max(1, Math.round(natW * ratio * 100) / 100),
+    height: Math.max(1, Math.round(natH * ratio * 100) / 100),
+  };
+}
+
+export async function compositeSignatureMediaToPng(params: {
+  stampSrc?: string | null;
+  stampLeftPx: number;
+  stampTopPx: number;
+  stampSizePx: number;
+  sigSrc?: string | null;
+  sigLeftPx: number;
+  sigTopPx: number;
+  sigHeightPx: number;
+  sigMaxWidthPx: number;
+  alignCenter?: boolean;
+  boxWidthPx?: number;
+  boxHeightPx?: number;
+}): Promise<PngImageInfo | null> {
+  const boxW = params.boxWidthPx ?? 220;
+  const boxH = params.boxHeightPx ?? 72;
+  const [stampInfo, sigInfo] = await Promise.all([
+    params.stampSrc ? imageUrlToPngWithMeta(params.stampSrc) : Promise.resolve(null),
+    params.sigSrc ? imageUrlToPngWithMeta(params.sigSrc) : Promise.resolve(null),
+  ]);
+  if (!stampInfo && !sigInfo) return null;
+
+  const loadImg = (dataUrl: string) =>
+    new Promise<HTMLImageElement | null>((resolve) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => resolve(null);
+      im.src = dataUrl;
+    });
+
+  const [stampEl, sigEl] = await Promise.all([
+    stampInfo ? loadImg(stampInfo.dataUrl) : Promise.resolve(null),
+    sigInfo ? loadImg(sigInfo.dataUrl) : Promise.resolve(null),
+  ]);
+
+  let sigDrawW = 0;
+  let sigDrawH = params.sigHeightPx;
+  if (sigInfo) {
+    const fitted = fitContainDimensions(
+      sigInfo.width,
+      sigInfo.height,
+      params.sigMaxWidthPx,
+      params.sigHeightPx
+    );
+    sigDrawW = fitted.width;
+    sigDrawH = fitted.height;
+  }
+
+  const sigBaseX = params.alignCenter ? (boxW - sigDrawW) / 2 : 0;
+  const sigDrawX = sigBaseX + params.sigLeftPx;
+  const sigDrawY = (boxH - sigDrawH) / 2 + params.sigTopPx;
+
+  let stampDrawW = 0;
+  let stampDrawH = 0;
+  if (stampInfo) {
+    const fitted = fitContainDimensions(
+      stampInfo.width,
+      stampInfo.height,
+      params.stampSizePx,
+      params.stampSizePx
+    );
+    stampDrawW = fitted.width;
+    stampDrawH = fitted.height;
+  }
+  const stampDrawX = params.stampLeftPx + (params.stampSizePx - stampDrawW) / 2;
+  const stampDrawY = params.stampTopPx + (params.stampSizePx - stampDrawH) / 2;
+
+  const minX = Math.min(0, stampEl ? stampDrawX : 0, sigEl ? sigDrawX : 0);
+  const minY = Math.min(0, stampEl ? stampDrawY : 0, sigEl ? sigDrawY : 0);
+  const maxX = Math.max(
+    boxW,
+    stampEl ? stampDrawX + stampDrawW : 0,
+    sigEl ? sigDrawX + sigDrawW : 0
+  );
+  const maxY = Math.max(
+    boxH,
+    stampEl ? stampDrawY + stampDrawH : 0,
+    sigEl ? sigDrawY + sigDrawH : 0
+  );
+
+  const outW = Math.max(1, Math.ceil(maxX - minX));
+  const outH = Math.max(1, Math.ceil(maxY - minY));
+  const dpr = 2;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = outW * dpr;
+  canvas.height = outH * dpr;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, outW, outH);
+
+  if (stampEl) {
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    ctx.drawImage(stampEl, stampDrawX - minX, stampDrawY - minY, stampDrawW, stampDrawH);
+    ctx.restore();
+  }
+  if (sigEl) {
+    ctx.drawImage(sigEl, sigDrawX - minX, sigDrawY - minY, sigDrawW, sigDrawH);
+  }
+
+  return {
+    dataUrl: canvas.toDataURL('image/png'),
+    width: outW,
+    height: outH,
+  };
 }
 
 export function compressCanvasToDataUrl(
@@ -559,5 +700,143 @@ export function compareStudentsByClassAndAbsent(
   );
 }
 
+export function getCurrentAcademicPeriod(now: Date = new Date()): {
+  academicYear: string;
+  semester: 'Ganjil' | 'Genap';
+  masterAcademicYears: string[];
+} {
+  const year = now.getFullYear();
+  const month = now.getMonth(); // 0 = Jan, 6 = Jul
+  const startYear = month >= 6 ? year : year - 1;
+  const semester: 'Ganjil' | 'Genap' = month >= 6 ? 'Ganjil' : 'Genap';
+  const prevYear = `${startYear - 2}/${startYear - 1}`;
+  const lastYear = `${startYear - 1}/${startYear}`;
+  const currentYear = `${startYear}/${startYear + 1}`;
+  const nextYear = `${startYear + 1}/${startYear + 2}`;
+  return {
+    academicYear: currentYear,
+    semester,
+    masterAcademicYears: [prevYear, lastYear, currentYear, nextYear],
+  };
+}
 
+const NON_TEACHING_SUBJECT_LABELS = new Set([
+  '-',
+  'umum / non-mapel',
+  'semua mata pelajaran',
+]);
+
+export function isNonTeachingSubjectLabel(value: string): boolean {
+  const clean = (value || '').trim().toLowerCase();
+  return !clean || NON_TEACHING_SUBJECT_LABELS.has(clean);
+}
+
+export function getTeacherSubjects(
+  teacher: Pick<Teacher, 'subject' | 'subjects' | 'subjectClasses'>
+): string[] {
+  const seen = new Set<string>();
+  const list: string[] = [];
+  const push = (raw: string) => {
+    const clean = (raw || '').trim();
+    const lower = clean.toLowerCase();
+    if (!clean || isNonTeachingSubjectLabel(clean) || seen.has(lower)) return;
+    seen.add(lower);
+    list.push(clean);
+  };
+
+  if (Array.isArray(teacher.subjects)) {
+    teacher.subjects.forEach(push);
+  }
+  if (teacher.subjectClasses && typeof teacher.subjectClasses === 'object') {
+    Object.keys(teacher.subjectClasses).forEach(push);
+  }
+  if (list.length === 0 && typeof teacher.subject === 'string') {
+    teacher.subject.split(/[,;]+/).forEach(push);
+  }
+  return list;
+}
+
+export function normalizeTeacherSubjectClasses(
+  subjects: string[],
+  rawMap?: Record<string, string[]>
+): Record<string, string[]> {
+  const result: Record<string, string[]> = {};
+  const subjMapLower = new Map<string, string>();
+  subjects.forEach((s) => {
+    const clean = s.trim();
+    if (clean && !isNonTeachingSubjectLabel(clean)) {
+      subjMapLower.set(clean.toLowerCase(), clean);
+      result[clean] = [];
+    }
+  });
+
+  if (rawMap && typeof rawMap === 'object') {
+    Object.entries(rawMap).forEach(([rawSubj, rawClasses]) => {
+      const cleanSubj = rawSubj.trim();
+      const canonical = subjMapLower.get(cleanSubj.toLowerCase()) || cleanSubj;
+      if (!canonical || isNonTeachingSubjectLabel(canonical)) return;
+      if (!Array.isArray(rawClasses)) return;
+      const seenCls = new Set<string>();
+      const cleanedCls: string[] = [];
+      rawClasses.forEach((cls) => {
+        const c = String(cls || '').trim();
+        const cLower = c.toLowerCase();
+        if (!c || seenCls.has(cLower)) return;
+        seenCls.add(cLower);
+        cleanedCls.push(c);
+      });
+      cleanedCls.sort(compareClassNames);
+      if (result[canonical] !== undefined || subjects.length === 0) {
+        result[canonical] = cleanedCls;
+      }
+    });
+  }
+
+  return result;
+}
+
+export function getAllTeacherClasses(
+  teacher: Pick<Teacher, 'subject' | 'subjects' | 'subjectClasses'>
+): string[] {
+  const set = new Set<string>();
+  const map = teacher.subjectClasses;
+  if (map && typeof map === 'object') {
+    Object.values(map).forEach((arr) => {
+      if (!Array.isArray(arr)) return;
+      arr.forEach((cls) => {
+        const clean = String(cls || '').trim();
+        if (clean) set.add(clean);
+      });
+    });
+  }
+  return Array.from(set).sort(compareClassNames);
+}
+
+export function getTeacherClassesForSubject(
+  teacher: Pick<Teacher, 'subjectClasses'>,
+  subjectName: string
+): string[] {
+  const map = teacher.subjectClasses;
+  if (!map || typeof map !== 'object') return [];
+  const lower = subjectName.trim().toLowerCase();
+  const matchedKey = Object.keys(map).find((k) => k.trim().toLowerCase() === lower);
+  const rawList = matchedKey ? map[matchedKey] : undefined;
+  if (!Array.isArray(rawList)) return [];
+  return [...rawList].filter(Boolean).sort(compareClassNames);
+}
+
+export function formatTeacherAssignmentsSummary(
+  teacher: Pick<Teacher, 'subject' | 'subjects' | 'subjectClasses'>
+): string {
+  const subjects = getTeacherSubjects(teacher);
+  if (subjects.length === 0) {
+    return teacher.subject || '-';
+  }
+  return subjects
+    .map((subj) => {
+      const classes = getTeacherClassesForSubject(teacher, subj);
+      return classes.length > 0 ? `${subj} (${classes.join(', ')})` : subj;
+    })
+    .join('; ');
+}
 

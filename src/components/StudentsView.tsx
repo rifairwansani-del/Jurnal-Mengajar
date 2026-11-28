@@ -83,12 +83,35 @@ export function StudentsView({
     return Array.from(set).sort(compareClassNames);
   }, [settings.masterClasses, students]);
 
-  const teacherNames = useMemo(() => {
+  const waliOptions = useMemo(() => {
     const set = new Set<string>();
+    teachers
+      .filter((t) => (t.position || '').toLowerCase().includes('wali'))
+      .forEach((t) => {
+        if (t.name) set.add(t.name);
+      });
     if (settings.teacherName) set.add(settings.teacherName);
     teachers.forEach((t) => {
       if (t.name) set.add(t.name);
     });
+    return Array.from(set);
+  }, [teachers, settings.teacherName]);
+
+  const bkOptions = useMemo(() => {
+    const set = new Set<string>();
+    teachers
+      .filter(
+        (t) =>
+          (t.position || '').toLowerCase().includes('bk') ||
+          (t.subject || '').toLowerCase().includes('bimbingan konseling')
+      )
+      .forEach((t) => {
+        if (t.name) set.add(t.name);
+      });
+    teachers.forEach((t) => {
+      if (t.name) set.add(t.name);
+    });
+    if (settings.teacherName) set.add(settings.teacherName);
     return Array.from(set);
   }, [teachers, settings.teacherName]);
 
@@ -239,8 +262,8 @@ export function StudentsView({
         '085712349901',
         'L',
         'Aktif',
-        teacherNames[0] || 'Dra. Siti Aminah, M.Pd.',
-        'Ratna Kusumawati, S.Psi.',
+        waliOptions[0] || 'Dra. Siti Aminah, M.Pd.',
+        bkOptions[0] || 'Ratna Kusumawati, S.Psi.',
         '2025',
       ],
       [
@@ -257,8 +280,8 @@ export function StudentsView({
         '085712349902',
         'P',
         'Aktif',
-        teacherNames[0] || 'Dra. Siti Aminah, M.Pd.',
-        'Ratna Kusumawati, S.Psi.',
+        waliOptions[0] || 'Dra. Siti Aminah, M.Pd.',
+        bkOptions[0] || 'Ratna Kusumawati, S.Psi.',
         '2025',
       ],
     ];
@@ -633,7 +656,7 @@ export function StudentsView({
       {/* Tabel Data Siswa Lengkap (max-h-[420px], sticky header) */}
       <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-200 space-y-3">
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+          <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3">
             <div>
               <h2 className="text-base font-bold text-slate-900">
                 Daftar Siswa Terdaftar ({filteredStudents.length})
@@ -643,46 +666,64 @@ export function StudentsView({
               </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2.5">
-              <select
-                value={classFilter}
-                onChange={(e) => setClassFilter(e.target.value)}
-                aria-label="Filter data siswa menurut kelas"
-                className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
-              >
-                <option value="">--Pilih Kelas--</option>
-                <option value="ALL">Semua Kelas</option>
-                {classOptions.map((c) => (
-                  <option key={c} value={c}>
-                    Kelas {c}
-                  </option>
-                ))}
-              </select>
+            <div className="flex flex-wrap items-end gap-2.5">
+              <div>
+                <label htmlFor="stu-filter-class" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                  Kelas
+                </label>
+                <select
+                  id="stu-filter-class"
+                  value={classFilter}
+                  onChange={(e) => setClassFilter(e.target.value)}
+                  aria-label="Filter data siswa menurut kelas"
+                  className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+                >
+                  <option value="">--Pilih Kelas--</option>
+                  <option value="ALL">Semua Kelas</option>
+                  {classOptions.map((c) => (
+                    <option key={c} value={c}>
+                      Kelas {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
-                aria-label="Filter status siswa"
-                className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
-              >
-                <option value="">--Pilih Status--</option>
-                <option value="ALL">Semua Status</option>
-                {STUDENT_STATUS_OPTIONS.map((stOpt) => (
-                  <option key={stOpt} value={stOpt}>
-                    {stOpt}
-                  </option>
-                ))}
-              </select>
+              <div>
+                <label htmlFor="stu-filter-status" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                  Status Siswa
+                </label>
+                <select
+                  id="stu-filter-status"
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                  aria-label="Filter status siswa"
+                  className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+                >
+                  <option value="">--Pilih Status--</option>
+                  <option value="ALL">Semua Status</option>
+                  {STUDENT_STATUS_OPTIONS.map((stOpt) => (
+                    <option key={stOpt} value={stOpt}>
+                      {stOpt}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-              <div className="relative">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Cari NIS / NISN / Nama..."
-                  className="pl-9 pr-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600 w-48 sm:w-56"
-                />
+              <div>
+                <label htmlFor="stu-filter-search" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                  Cari Siswa
+                </label>
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    id="stu-filter-search"
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Cari NIS / NISN / Nama..."
+                    className="pl-9 pr-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600 w-48 sm:w-56"
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -1120,7 +1161,7 @@ export function StudentsView({
               </label>
               <input
                 id="st-wali"
-                list="student-teacher-options"
+                list="student-wali-options"
                 value={homeroomTeacher}
                 onChange={(e) => setHomeroomTeacher(e.target.value)}
                 placeholder="Pilih atau ketik nama Wali Kelas"
@@ -1134,7 +1175,7 @@ export function StudentsView({
               </label>
               <input
                 id="st-bk"
-                list="student-teacher-options"
+                list="student-bk-options"
                 value={counselorTeacher}
                 onChange={(e) => setCounselorTeacher(e.target.value)}
                 placeholder="Pilih atau ketik nama Guru BK"
@@ -1142,8 +1183,14 @@ export function StudentsView({
               />
             </div>
 
-            <datalist id="student-teacher-options">
-              {teacherNames.map((nameItem) => (
+            <datalist id="student-wali-options">
+              {waliOptions.map((nameItem) => (
+                <option key={nameItem} value={nameItem} />
+              ))}
+            </datalist>
+
+            <datalist id="student-bk-options">
+              {bkOptions.map((nameItem) => (
                 <option key={nameItem} value={nameItem} />
               ))}
             </datalist>

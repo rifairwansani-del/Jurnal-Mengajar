@@ -2039,72 +2039,92 @@ export function SettingsView({
               className="bg-white p-5 border border-slate-200 text-black overflow-x-auto"
               style={{ fontFamily: getPrintFontCss(kop.fontFamily) }}
             >
-              <div className="pb-3 border-b-4 border-double border-black flex items-center justify-between gap-4">
-                <div
-                  style={{
-                    width: `${Math.max(64, (kop.logoLeftSize ?? 72) + 8)}px`,
-                    minHeight: `${kop.logoLeftSize ?? 72}px`,
-                  }}
-                  className="shrink-0 flex items-center justify-center"
-                >
-                  {kop.logoLeft && (
-                    <img
-                      src={kop.logoLeft}
-                      alt="Preview Logo Kiri"
-                      style={{
-                        width: `${kop.logoLeftSize ?? 72}px`,
-                        height: `${kop.logoLeftSize ?? 72}px`,
-                      }}
-                      className="object-contain"
-                    />
-                  )}
-                </div>
-                <div
-                  className="flex-1 min-w-0"
-                  style={{ lineHeight: normalizeKopLineSpacing(kop.lineSpacing) }}
-                >
-                  {KOP_LINE_KEYS.map((key, idx) => {
-                    const text = kop[key];
-                    if (!text) return null;
-                    const s = resolveKopLineStyle(kop, key);
-                    return (
-                      <p
-                        key={key}
+              <div style={{ borderBottom: '4px double #000000', paddingBottom: '10px' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <tbody>
+                    <tr>
+                      <td
                         style={{
-                          fontSize: `${s.fontSize}pt`,
-                          fontWeight: s.bold ? 700 : 400,
-                          fontStyle: s.italic ? 'italic' : 'normal',
-                          textDecoration: s.underline ? 'underline' : 'none',
-                          textAlign: s.align,
-                          ...(s.align === 'justify' ? { textAlignLast: 'justify' as const } : {}),
-                          ...(idx < 3 ? { textTransform: 'uppercase' as const } : {}),
-                          ...(key === 'line4' ? { marginTop: '3px' } : {}),
+                          width: `${Math.max(76, (kop.logoLeftSize ?? 72) + 14)}px`,
+                          textAlign: 'center',
+                          verticalAlign: 'middle',
+                          padding: '0 6px',
+                          border: 'none',
                         }}
                       >
-                        {text}
-                      </p>
-                    );
-                  })}
-                </div>
-                <div
-                  style={{
-                    width: `${Math.max(64, (kop.logoRightSize ?? 72) + 8)}px`,
-                    minHeight: `${kop.logoRightSize ?? 72}px`,
-                  }}
-                  className="shrink-0 flex items-center justify-center"
-                >
-                  {kop.logoRight && (
-                    <img
-                      src={kop.logoRight}
-                      alt="Preview Logo Kanan"
-                      style={{
-                        width: `${kop.logoRightSize ?? 72}px`,
-                        height: `${kop.logoRightSize ?? 72}px`,
-                      }}
-                      className="object-contain"
-                    />
-                  )}
-                </div>
+                        {kop.logoLeft && (
+                          <img
+                            src={kop.logoLeft}
+                            alt="Preview Logo Kiri"
+                            style={{
+                              width: `${kop.logoLeftSize ?? 72}px`,
+                              height: `${kop.logoLeftSize ?? 72}px`,
+                              objectFit: 'contain',
+                              display: 'inline-block',
+                            }}
+                          />
+                        )}
+                      </td>
+                      <td
+                        style={{
+                          fontFamily: getPrintFontCss(kop.fontFamily),
+                          verticalAlign: 'middle',
+                          lineHeight: `${Math.round(normalizeKopLineSpacing(kop.lineSpacing) * 100)}%`,
+                          padding: '0 4px',
+                          border: 'none',
+                        }}
+                      >
+                        {KOP_LINE_KEYS.map((key, idx) => {
+                          const text = kop[key];
+                          if (!text) return null;
+                          const s = resolveKopLineStyle(kop, key);
+                          return (
+                            <p
+                              key={key}
+                              style={{
+                                margin: 0,
+                                padding: 0,
+                                lineHeight: `${Math.round(normalizeKopLineSpacing(kop.lineSpacing) * 100)}%`,
+                                fontSize: `${s.fontSize}pt`,
+                                fontWeight: s.bold ? 700 : 400,
+                                fontStyle: s.italic ? 'italic' : 'normal',
+                                textDecoration: s.underline ? 'underline' : 'none',
+                                textAlign: s.align,
+                                ...(s.align === 'justify' ? { textAlignLast: 'justify' as const } : {}),
+                                ...(idx < 3 ? { textTransform: 'uppercase' as const } : {}),
+                                ...(key === 'line4' ? { marginTop: '3px' } : {}),
+                              }}
+                            >
+                              {text}
+                            </p>
+                          );
+                        })}
+                      </td>
+                      <td
+                        style={{
+                          width: `${Math.max(76, (kop.logoRightSize ?? 72) + 14)}px`,
+                          textAlign: 'center',
+                          verticalAlign: 'middle',
+                          padding: '0 6px',
+                          border: 'none',
+                        }}
+                      >
+                        {kop.logoRight && (
+                          <img
+                            src={kop.logoRight}
+                            alt="Preview Logo Kanan"
+                            style={{
+                              width: `${kop.logoRightSize ?? 72}px`,
+                              height: `${kop.logoRightSize ?? 72}px`,
+                              objectFit: 'contain',
+                              display: 'inline-block',
+                            }}
+                          />
+                        )}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>

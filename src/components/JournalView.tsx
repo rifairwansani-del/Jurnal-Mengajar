@@ -31,6 +31,7 @@ import {
   compareStudentsByClassAndAbsent,
   formatCompactDateId,
   formatShortDateId,
+  getTeacherSubjects,
   getTodayISO,
   summarizeJournalRow,
 } from '../utils/portalHelpers';
@@ -64,7 +65,7 @@ export function JournalView({
   onToast,
   onConfirm,
 }: JournalViewProps) {
-  const { students, journals, settings, session } = db;
+  const { students, teachers, journals, settings, session } = db;
 
   // Section 1: Form state
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -101,6 +102,14 @@ export function JournalView({
     });
     return Array.from(set).sort(compareClassNames);
   }, [settings.masterClasses, students]);
+
+  const subjectOptions = useMemo(() => {
+    const set = new Set(settings.masterSubjects);
+    teachers.forEach((t) => {
+      getTeacherSubjects(t).forEach((subj) => set.add(subj));
+    });
+    return Array.from(set);
+  }, [settings.masterSubjects, teachers]);
 
   // Apply external draft (from Dashboard Edit/Duplicate)
   useEffect(() => {
@@ -624,31 +633,43 @@ export function JournalView({
             </button>
 
             {historyExpanded && (
-              <div className="flex flex-wrap items-center gap-2.5">
-              <select
-                value={historyClassFilter}
-                onChange={(e) => setHistoryClassFilter(e.target.value)}
-                aria-label="Filter riwayat berdasarkan kelas"
-                className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
-              >
-                <option value="">--Pilih Kelas--</option>
-                <option value="ALL">Semua Kelas</option>
-                {classOptions.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
+              <div className="flex flex-wrap items-end gap-2.5">
+              <div>
+                <label htmlFor="jrn-hist-class" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                  Kelas
+                </label>
+                <select
+                  id="jrn-hist-class"
+                  value={historyClassFilter}
+                  onChange={(e) => setHistoryClassFilter(e.target.value)}
+                  aria-label="Filter riwayat berdasarkan kelas"
+                  className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+                >
+                  <option value="">--Pilih Kelas--</option>
+                  <option value="ALL">Semua Kelas</option>
+                  {classOptions.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-              <div className="relative">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={historySearch}
-                  onChange={(e) => setHistorySearch(e.target.value)}
-                  placeholder="Cari materi / mapel..."
-                  className="pl-9 pr-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600 w-48 sm:w-56"
-                />
+              <div>
+                <label htmlFor="jrn-hist-search" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                  Cari Jurnal
+                </label>
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    id="jrn-hist-search"
+                    type="text"
+                    value={historySearch}
+                    onChange={(e) => setHistorySearch(e.target.value)}
+                    placeholder="Cari materi / mapel..."
+                    className="pl-9 pr-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-600 w-48 sm:w-56"
+                  />
+                </div>
               </div>
 
               <button
@@ -919,35 +940,47 @@ export function JournalView({
             </button>
 
             {ledgerExpanded && (
-            <div className="flex flex-wrap items-center gap-2.5">
-              <select
-                value={ledgerClass}
-                onChange={(e) => setLedgerClass(e.target.value)}
-                aria-label="Pilih kelas untuk leger kehadiran"
-                className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
-              >
-                <option value="">--Pilih Kelas--</option>
-                {classOptions.map((c) => (
-                  <option key={c} value={c}>
-                    Kelas {c}
-                  </option>
-                ))}
-              </select>
+            <div className="flex flex-wrap items-end gap-2.5">
+              <div>
+                <label htmlFor="jrn-ledger-class" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                  Kelas
+                </label>
+                <select
+                  id="jrn-ledger-class"
+                  value={ledgerClass}
+                  onChange={(e) => setLedgerClass(e.target.value)}
+                  aria-label="Pilih kelas untuk leger kehadiran"
+                  className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+                >
+                  <option value="">--Pilih Kelas--</option>
+                  {classOptions.map((c) => (
+                    <option key={c} value={c}>
+                      Kelas {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-              <select
-                value={ledgerSubject}
-                onChange={(e) => setLedgerSubject(e.target.value)}
-                aria-label="Filter mata pelajaran leger"
-                className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
-              >
-                <option value="">--Pilih Mapel--</option>
-                <option value="ALL">Semua Mata Pelajaran</option>
-                {settings.masterSubjects.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
+              <div>
+                <label htmlFor="jrn-ledger-subject" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                  Mata Pelajaran
+                </label>
+                <select
+                  id="jrn-ledger-subject"
+                  value={ledgerSubject}
+                  onChange={(e) => setLedgerSubject(e.target.value)}
+                  aria-label="Filter mata pelajaran leger"
+                  className="px-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-indigo-600"
+                >
+                  <option value="">--Pilih Mapel--</option>
+                  <option value="ALL">Semua Mata Pelajaran</option>
+                  {subjectOptions.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
               <button
                 type="button"
@@ -973,7 +1006,7 @@ export function JournalView({
             </span>
             <TableExportToolbar
               onExportXlsx={() => {
-                const headers = ['No', 'NIS', 'Nama Siswa', ...ledgerJournals.map((j) => `${formatCompactDateId(j.date)} (${j.subject})`), 'H', 'S', 'I', 'A', 'D', '% Hadir'];
+                const headers = ['No', 'NIS', 'NISN', 'Nama Siswa', ...ledgerJournals.map((j) => `${formatCompactDateId(j.date)} (${j.subject})`), 'H', 'S', 'I', 'A', 'D', '% Hadir'];
                 const rows = ledgerStudents.map((st, idx) => {
                   const counts: Record<AttendanceStatus, number> = { H: 0, S: 0, I: 0, A: 0, D: 0 };
                   const vals = ledgerJournals.map((j) => {
@@ -982,13 +1015,13 @@ export function JournalView({
                     return v;
                   });
                   const pct = ledgerJournals.length > 0 ? `${((counts.H / ledgerJournals.length) * 100).toFixed(0)}%` : '0%';
-                  return [idx + 1, st.nis, st.name, ...vals, counts.H, counts.S, counts.I, counts.A, counts.D, pct];
+                  return [idx + 1, st.nis, st.nisn || '-', st.name, ...vals, counts.H, counts.S, counts.I, counts.A, counts.D, pct];
                 });
                 exportRowsToXlsx(`Leger ${ledgerClass}`, headers, rows, `Leger_Kehadiran_${ledgerClass}_${getTodayISO()}.xlsx`);
                 onToast('success', `Leger kehadiran ${ledgerClass} diekspor ke XLSX.`);
               }}
               onExportXls={() => {
-                const headers = ['No', 'NIS', 'Nama Siswa', ...ledgerJournals.map((j) => `${formatCompactDateId(j.date)} (${j.subject})`), 'H', 'S', 'I', 'A', 'D', '% Hadir'];
+                const headers = ['No', 'NIS', 'NISN', 'Nama Siswa', ...ledgerJournals.map((j) => `${formatCompactDateId(j.date)} (${j.subject})`), 'H', 'S', 'I', 'A', 'D', '% Hadir'];
                 const rows = ledgerStudents.map((st, idx) => {
                   const counts: Record<AttendanceStatus, number> = { H: 0, S: 0, I: 0, A: 0, D: 0 };
                   const vals = ledgerJournals.map((j) => {
@@ -997,13 +1030,13 @@ export function JournalView({
                     return v;
                   });
                   const pct = ledgerJournals.length > 0 ? `${((counts.H / ledgerJournals.length) * 100).toFixed(0)}%` : '0%';
-                  return [idx + 1, st.nis, st.name, ...vals, counts.H, counts.S, counts.I, counts.A, counts.D, pct];
+                  return [idx + 1, st.nis, st.nisn || '-', st.name, ...vals, counts.H, counts.S, counts.I, counts.A, counts.D, pct];
                 });
                 exportRowsToXls(`Leger ${ledgerClass}`, headers, rows, `Leger_Kehadiran_${ledgerClass}_${getTodayISO()}.xls`);
                 onToast('success', `Leger kehadiran ${ledgerClass} diekspor ke XLS.`);
               }}
               onExportWord={(cfg) => {
-                const headers = ['No', 'Nama Siswa', ...ledgerJournals.map((j) => formatCompactDateId(j.date)), 'H', 'S', 'I', 'A', 'D', '%'];
+                const headers = ['No', 'NIS', 'NISN', 'Nama Siswa', ...ledgerJournals.map((j) => formatCompactDateId(j.date)), 'H', 'S', 'I', 'A', 'D', '%'];
                 const rows = ledgerStudents.map((st, idx) => {
                   const counts: Record<AttendanceStatus, number> = { H: 0, S: 0, I: 0, A: 0, D: 0 };
                   const vals = ledgerJournals.map((j) => {
@@ -1012,7 +1045,7 @@ export function JournalView({
                     return v;
                   });
                   const pct = ledgerJournals.length > 0 ? `${((counts.H / ledgerJournals.length) * 100).toFixed(0)}%` : '0%';
-                  return [idx + 1, st.name, ...vals, counts.H, counts.S, counts.I, counts.A, counts.D, pct];
+                  return [idx + 1, st.nis, st.nisn || '-', st.name, ...vals, counts.H, counts.S, counts.I, counts.A, counts.D, pct];
                 });
                 exportDatasetToWordDoc({
                   db,
@@ -1027,7 +1060,7 @@ export function JournalView({
                 onToast('success', 'Dokumen Word (.doc) Leger Kehadiran diunduh.');
               }}
               onExportPdf={(cfg) => {
-                const headers = ['No', 'Nama Siswa', ...ledgerJournals.map((j) => formatCompactDateId(j.date)), 'H', 'S', 'I', 'A', 'D', '%'];
+                const headers = ['No', 'NIS', 'NISN', 'Nama Siswa', ...ledgerJournals.map((j) => formatCompactDateId(j.date)), 'H', 'S', 'I', 'A', 'D', '%'];
                 const rows = ledgerStudents.map((st, idx) => {
                   const counts: Record<AttendanceStatus, number> = { H: 0, S: 0, I: 0, A: 0, D: 0 };
                   const vals = ledgerJournals.map((j) => {
@@ -1036,7 +1069,7 @@ export function JournalView({
                     return v;
                   });
                   const pct = ledgerJournals.length > 0 ? `${((counts.H / ledgerJournals.length) * 100).toFixed(0)}%` : '0%';
-                  return [idx + 1, st.name, ...vals, counts.H, counts.S, counts.I, counts.A, counts.D, pct];
+                  return [idx + 1, st.nis, st.nisn || '-', st.name, ...vals, counts.H, counts.S, counts.I, counts.A, counts.D, pct];
                 });
                 exportDatasetToPdf({
                   db,
@@ -1051,7 +1084,7 @@ export function JournalView({
                 onToast('success', 'Dokumen PDF Leger Kehadiran diunduh.');
               }}
               onPrint={(cfg) => {
-                const headers = ['No', 'Nama Siswa', ...ledgerJournals.map((j) => formatCompactDateId(j.date)), 'H', 'S', 'I', 'A', 'D', '%'];
+                const headers = ['No', 'NIS', 'NISN', 'Nama Siswa', ...ledgerJournals.map((j) => formatCompactDateId(j.date)), 'H', 'S', 'I', 'A', 'D', '%'];
                 const rows = ledgerStudents.map((st, idx) => {
                   const counts: Record<AttendanceStatus, number> = { H: 0, S: 0, I: 0, A: 0, D: 0 };
                   const vals = ledgerJournals.map((j) => {
@@ -1060,7 +1093,7 @@ export function JournalView({
                     return v;
                   });
                   const pct = ledgerJournals.length > 0 ? `${((counts.H / ledgerJournals.length) * 100).toFixed(0)}%` : '0%';
-                  return [idx + 1, st.name, ...vals, counts.H, counts.S, counts.I, counts.A, counts.D, pct];
+                  return [idx + 1, st.nis, st.nisn || '-', st.name, ...vals, counts.H, counts.S, counts.I, counts.A, counts.D, pct];
                 });
                 printDatasetExact({
                   db,
@@ -1089,6 +1122,8 @@ export function JournalView({
                 <th className="sticky left-10 z-30 bg-slate-100 px-3 py-3 min-w-[170px] border-r border-slate-200">
                   Nama Siswa
                 </th>
+                <th className="px-2.5 py-3 whitespace-nowrap">NIS</th>
+                <th className="px-2.5 py-3 whitespace-nowrap">NISN</th>
                 {ledgerJournals.map((j) => (
                   <th
                     key={j.id}
@@ -1115,7 +1150,7 @@ export function JournalView({
               {!ledgerClass ? (
                 <tr>
                   <td
-                    colSpan={8 + ledgerJournals.length}
+                    colSpan={10 + ledgerJournals.length}
                     className="px-4 py-10 text-center text-sm text-slate-500"
                   >
                     Silakan pilih kelas terlebih dahulu untuk melihat leger kehadiran.
@@ -1124,7 +1159,7 @@ export function JournalView({
               ) : ledgerStudents.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={8 + ledgerJournals.length}
+                    colSpan={10 + ledgerJournals.length}
                     className="px-4 py-10 text-center text-sm text-slate-500"
                   >
                     Belum ada siswa di kelas {ledgerClass}.
@@ -1133,7 +1168,7 @@ export function JournalView({
               ) : ledgerJournals.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={8}
+                    colSpan={10}
                     className="px-4 py-10 text-center text-sm text-slate-500"
                   >
                     Belum ada pertemuan KBM tercatat untuk kelas {ledgerClass}.
@@ -1162,6 +1197,12 @@ export function JournalView({
                         >
                           {st.name}
                         </button>
+                      </td>
+                      <td className="px-2.5 py-2 text-xs font-mono-tabular text-slate-600 whitespace-nowrap">
+                        {st.nis}
+                      </td>
+                      <td className="px-2.5 py-2 text-xs font-mono-tabular text-slate-600 whitespace-nowrap">
+                        {st.nisn || '-'}
                       </td>
                       {ledgerJournals.map((j) => {
                         const val = ledgerEdits[j.id]?.[st.id] ?? j.attendance[st.id]?.status ?? 'H';
@@ -1269,7 +1310,7 @@ export function JournalView({
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600"
               >
                 <option value="">--Pilih Mapel--</option>
-                {settings.masterSubjects.map((subj) => (
+                {subjectOptions.map((subj) => (
                   <option key={subj} value={subj}>
                     {subj}
                   </option>
@@ -1339,6 +1380,7 @@ export function JournalView({
                       <tr>
                         <th className="px-3 py-2.5 w-10 text-center">No</th>
                         <th className="px-3 py-2.5 whitespace-nowrap">NIS</th>
+                        <th className="px-3 py-2.5 whitespace-nowrap">NISN</th>
                         <th className="px-3 py-2.5 min-w-[180px]">Nama Siswa</th>
                         <th className="px-3 py-2.5 whitespace-nowrap">Status Kehadiran</th>
                         <th className="px-3 py-2.5 min-w-[200px]">Keterangan</th>
@@ -1354,6 +1396,9 @@ export function JournalView({
                             </td>
                             <td className="px-3 py-2 text-xs font-mono-tabular text-slate-600 whitespace-nowrap">
                               {st.nis}
+                            </td>
+                            <td className="px-3 py-2 text-xs font-mono-tabular text-slate-600 whitespace-nowrap">
+                              {st.nisn || '-'}
                             </td>
                             <td className="px-3 py-2 font-medium text-slate-900 whitespace-nowrap">
                               <button
